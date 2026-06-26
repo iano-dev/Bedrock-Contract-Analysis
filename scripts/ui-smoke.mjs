@@ -57,8 +57,10 @@ try {
   await sleep(400);
   await page.screenshot({ path: `${outDir}/review-resized.png` });
 
-  // Chat tab: switch, ask a question, confirm a user + bot bubble render.
-  await page.click('#tabs button[data-tab="chat"]');
+  // Chat is always visible below findings; ask a question, confirm bubbles render.
+  const findingsVisible = await page.locator('#comments .comment').first().isVisible();
+  const chatVisible = await page.locator('#chatinput').isVisible();
+  console.log(`findings visible=${findingsVisible}, chat visible=${chatVisible} (both should be true)`);
   await page.fill('#chatinput', 'What is the retainage percentage?');
   await page.click('#chatsend');
   await page.waitForSelector('.cmsg.bot', { timeout: 30000 });

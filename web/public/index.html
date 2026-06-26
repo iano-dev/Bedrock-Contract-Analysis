@@ -63,11 +63,11 @@
 
   .sidepane{flex:1 1 42%;min-width:240px;background:var(--panel);overflow:hidden;border-left:1px solid var(--line);display:flex;flex-direction:column;}
   .summary{padding:12px 14px;border-bottom:1px solid var(--line);background:var(--panel);flex:0 0 auto;}
-  .tabs{display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid var(--line);flex:0 0 auto;}
-  .tabs button{flex:1;font-size:13px;font-weight:600;border:1px solid var(--line);background:#fff;border-radius:6px;padding:6px;cursor:pointer;}
-  .tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent);}
-  #findingsView{flex:1 1 auto;overflow:auto;}
-  #chatView{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;}
+  #findingsView{flex:1 1 58%;overflow:auto;min-height:80px;}
+  .hgutter{flex:0 0 6px;background:var(--line);cursor:row-resize;}
+  .hgutter:hover{background:var(--accent);}
+  #chatView{flex:1 1 42%;display:flex;flex-direction:column;min-height:120px;}
+  .chathdr{flex:0 0 auto;padding:7px 12px;font-weight:600;font-size:13px;border-bottom:1px solid var(--line);background:#f6f8fa;}
   .chatmsgs{flex:1 1 auto;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px;}
   .chatempty{color:#57606a;font-size:12.5px;}
   .cmsg{max-width:92%;padding:8px 11px;border-radius:10px;font-size:13px;line-height:1.45;white-space:pre-wrap;word-break:break-word;}
@@ -202,15 +202,13 @@
     <div class="gutter" id="gutter"></div>
     <div class="sidepane" id="sidepane">
       <div class="summary" id="summary"></div>
-      <div class="tabs" id="tabs">
-        <button data-tab="findings" class="on">Findings</button>
-        <button data-tab="chat">Ask the contract</button>
-      </div>
       <div id="findingsView">
         <div class="comments" id="comments"></div>
         <div class="section-extra" id="extra"></div>
       </div>
-      <div id="chatView" style="display:none">
+      <div class="hgutter" id="hgutter" title="Drag to resize findings vs. chat"></div>
+      <div id="chatView">
+        <div class="chathdr">💬 Ask the contract</div>
         <div class="chatmsgs" id="chatmsgs">
           <div class="chatempty">Ask anything about this contract — e.g. “What’s the retainage and when is it released?”, “Is there a liquidated-damages clause?”, or “Find where indemnification is covered.” Answers cite the contract and you can click a citation to jump to it.</div>
         </div>
@@ -446,15 +444,22 @@ function renderExtra(a){
   $('extra').innerHTML=h;
 }
 
-// ---------- chat: ask the contract ----------
-$('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{
-  $('tabs').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
-  const chat=b.dataset.tab==='chat';
-  $('chatView').style.display=chat?'flex':'none';
-  $('findingsView').style.display=chat?'none':'block';
-  if(chat) setTimeout(()=>$('chatinput').focus(),0);
-});
+// ---------- chat: ask the contract (always visible below findings) ----------
 $('chatsend').onclick=sendChat;
+// Draggable horizontal divider between findings and chat.
+(function(){
+  const g=$('hgutter'),pane=$('sidepane'),fv=$('findingsView');
+  let drag=false;
+  g.addEventListener('mousedown',e=>{drag=true;e.preventDefault();document.body.style.cursor='row-resize';});
+  window.addEventListener('mouseup',()=>{drag=false;document.body.style.cursor='';});
+  window.addEventListener('mousemove',e=>{
+    if(!drag)return;
+    const r=pane.getBoundingClientRect(), summaryH=$('summary').offsetHeight;
+    let h=e.clientY-r.top-summaryH;
+    h=Math.max(80,Math.min(r.height-summaryH-140,h));
+    fv.style.flex='0 0 '+h+'px';
+  });
+})();
 $('chatinput').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); sendChat(); } });
 function addMsg(role,text){
   const empty=$('chatmsgs').querySelector('.chatempty'); if(empty) empty.remove();
