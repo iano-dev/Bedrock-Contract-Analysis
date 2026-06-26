@@ -36,6 +36,13 @@
   .muted{color:#57606a;font-size:12px;}
   .err{color:var(--hi);font-weight:600;}
   #fileChosen{font-size:13px;margin-top:10px;}
+  .chk{display:flex;align-items:center;gap:8px;font-weight:500;margin-top:12px;font-size:14px;cursor:pointer;}
+  .chk input{width:auto;}
+  .bidbox{margin-top:16px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:#fafbfc;}
+  .bidbox summary{cursor:pointer;font-weight:600;font-size:14px;}
+  .bidgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;}
+  .bidgrid label{margin:8px 0 3px;}
+  .bidbox input[type=number],.bidbox select{width:100%;}
 
   #review{flex:1;display:none;min-height:0;}
   .reviewer{display:flex;height:100%;min-height:0;}
@@ -152,22 +159,29 @@
           <option value="2">Tier 2 — full review</option>
         </select>
       </div>
-      <div>
-        <label>Claude-assisted pass</label>
-        <select id="llm">
-          <option value="auto">Auto (use if API key configured)</option>
-          <option value="on">On</option>
-          <option value="off">Off — rules engine only</option>
-        </select>
+    </div>
+    <label class="chk"><input type="checkbox" id="llmchk" checked> Use Claude AI analysis <span class="muted">— recommended; finds clauses the rules engine misses</span></label>
+    <label class="chk"><input type="checkbox" id="ocr" checked> OCR scanned pages <span class="muted">— for image/scanned PDFs (slower)</span></label>
+
+    <details class="bidbox">
+      <summary>Optional: what you priced in your bid</summary>
+      <p class="muted" style="margin:8px 0 4px">Tell the analyzer what your bid assumed and it will flag work the schedule pushes <b>outside</b> what you priced — extra trips to the site, or premium/Saturday time — as possible change orders. Leave blank to skip.</p>
+      <div class="bidgrid">
+        <div>
+          <label>How was labor priced?</label>
+          <select id="bidBasis">
+            <option value="">—</option>
+            <option value="straight-time">Straight time</option>
+            <option value="premium">Premium / overtime included</option>
+            <option value="unknown">Not sure</option>
+          </select>
+        </div>
+        <div><label>Mobilizations (trips) you priced</label><input id="bidMobs" type="number" min="0" placeholder="e.g. 1"></div>
+        <div><label>$ per additional mobilization</label><input id="bidMobRate" type="number" min="0" placeholder="e.g. 350"></div>
+        <div><label>$/hr standby, per crew member</label><input id="bidStandby" type="number" min="0" placeholder="e.g. 150"></div>
       </div>
-    </div>
-    <div>
-      <label style="display:flex;align-items:center;gap:8px;font-weight:500">
-        <input type="checkbox" id="ocr" checked style="width:auto"> OCR scanned pages in the browser (slower)
-      </label>
-    </div>
-    <label>Bid assumptions (optional JSON — enables bid-vs-schedule cross-check)</label>
-    <textarea id="bid" placeholder='{ "basis": "straight-time", "pricedMobilizations": 1, "additionalMobRate": 350, "standbyRate": 150 }'></textarea>
+      <label class="chk"><input type="checkbox" id="bidSat"> My bid included Saturday / weekend work</label>
+    </details>
     <div class="row2">
       <button class="btn" id="analyzeBtn" disabled>Analyze</button>
       <span id="status" class="muted"></span>
@@ -290,12 +304,11 @@ async function analyze(){
     }
     if(!payload.text.trim()) throw new Error('No text could be extracted from this file.');
     setStatus(' Analyzing…');
-    const bid=$('bid').value.trim();
     const body={
       text:payload.text, pages:payload.pages, fileName:chosen.name,
       tier:$('tier').value==='auto'?'auto':Number($('tier').value),
-      llm:$('llm').value==='on'?true:$('llm').value==='off'?false:'auto',
-      bidAssumptions: bid?safeJson(bid):{},
+      llm:$('llmchk').checked,
+      bidAssumptions: getBid(),
       extraction:{pageCount:payload.pageCount,ocrUsed:payload.ocrUsed,ocrPages:payload.ocrPages,scannedPageCount:payload.scannedPageCount,chars:payload.text.length},
     };
     const res=await fetch('/api/analyze',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
@@ -306,7 +319,15 @@ async function analyze(){
     openReview(data.analysis,chosen.isPdf);
   }catch(err){ setStatus(' <span class="err">'+esc(err.message)+'</span>'); $('analyzeBtn').disabled=false; }
 }
-function safeJson(s){try{return JSON.parse(s);}catch{return {};}}
+function getBid(){
+  const b={}, val=(id)=>$(id).value;
+  if(val('bidBasis')) b.basis=val('bidBasis');
+  if(val('bidMobs')!=='') b.pricedMobilizations=Number(val('bidMobs'));
+  if(val('bidMobRate')!=='') b.additionalMobRate=Number(val('bidMobRate'));
+  if(val('bidStandby')!=='') b.standbyRate=Number(val('bidStandby'));
+  if(Object.keys(b).length) b.pricedSaturdayWork=$('bidSat').checked;
+  return b;
+}
 
 // ---------- client-side extraction + OCR ----------
 async function extractClient(bytes,{ocr}){
