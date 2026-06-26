@@ -10,6 +10,11 @@ export default async () => {
       googleApiKey: process.env.GOOGLE_API_KEY || null,
       llmConfigured: !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN),
       authEnabled: authEnabled(),
+      authConfig: {
+        clientId: !!process.env.GOOGLE_CLIENT_ID,
+        domains: !!process.env.ALLOWED_EMAIL_DOMAINS,
+        secret: !!process.env.SESSION_SECRET,
+      },
     }),
     { headers: { 'content-type': 'application/json' } }
   );
