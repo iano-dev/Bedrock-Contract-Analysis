@@ -152,6 +152,40 @@ export async function llmFindClauses(text, { existingFlags = [], logger } = {}) 
   return { flags: all, truncated, coveredChars, totalChars: text.length, chunkCount: chunks.length };
 }
 
+// Bounded, single-call enrichment for the serverless web path: extract contract
+// facts AND find missed clauses in ONE Claude call over a capped excerpt, at low
+// effort, so it returns well within a serverless function's time limit. Returns
+// raw facts + flags; the caller normalizes and merges. (The chunked, full-document
+// enrichAnalysisWithLlm above is used by the CLI/library where there's no timeout.)
+const ENRICH_MAX_CHARS = 36000; // ~9k tokens — one fast call
+
+const EnrichSchema = z.object({
+  facts: MetadataSchema,
+  flags: z.array(FlagSchema),
+});
+
+export async function llmQuickEnrich(documentText, { existingFlags = [] } = {}) {
+  const c = client();
+  let doc = documentText || '';
+  const truncated = doc.length > ENRICH_MAX_CHARS;
+  if (truncated) doc = doc.slice(0, ENRICH_MAX_CHARS);
+  const existingList = existingFlags.map((f) => `- [${f.category}] ${f.title}`).join('\n') || '(none)';
+  const res = await c.messages.parse({
+    model: MODEL,
+    max_tokens: 4000,
+    system: systemBlocks(),
+    messages: [
+      {
+        role: 'user',
+        content: `${FLAG_INSTRUCTIONS}\n\nAlso extract the contract facts (type, parties, value, scope, prevailing wage).\n\nAlready-detected risks (do not repeat):\n${existingList}\n\n--- CONTRACT (excerpt) ---\n${doc}\n---`,
+      },
+    ],
+    output_config: { format: zodOutputFormat(EnrichSchema, 'enrichment'), effort: 'low' },
+  });
+  const out = res.parsed_output || { facts: null, flags: [] };
+  return { facts: out.facts || null, rawFlags: out.flags || [], truncated };
+}
+
 // Convert raw LLM flags into the engine's Flag shape, attaching a page number by
 // locating the quoted clause text in the document, and de-duping against the
 // rules-engine flags by title similarity.

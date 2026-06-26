@@ -7,7 +7,9 @@
 import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { runAnalysis } from '../src/engine/run.js';
+import { analyze } from '../src/engine/analyze.js';
+import { llmQuickEnrich, normalizeLlmFlags, llmAvailable } from '../src/engine/llm.js';
+import { applyTierPosture } from '../src/engine/tiers.js';
 import { chatAboutContract, chatAvailable } from '../src/engine/chat.js';
 import { buildMarkdown, buildDocx } from '../src/deliverables/index.js';
 import { loadCounterparties } from '../src/engine/tiers.js';
@@ -71,13 +73,30 @@ async function requireAuth(req, res, next) {
 
 app.get('/api/counterparties', (_req, res) => res.json(loadCounterparties()));
 
-app.post('/api/analyze', requireAuth, async (req, res) => {
+app.post('/api/analyze', requireAuth, (req, res) => {
   try {
     if (!req.body?.text || !req.body.text.trim()) {
       return res.status(400).json({ error: 'No contract text supplied (extraction may have failed in the browser).' });
     }
-    const analysis = await runAnalysis(req.body);
+    const { text, pages, fileName, tier, bidAssumptions, extraction } = req.body;
+    const analysis = analyze({ text, pages, fileName, tier, bidAssumptions });
+    if (extraction) analysis.extraction = extraction;
+    analysis.llm = { used: false };
     res.json({ analysis });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/enrich', requireAuth, async (req, res) => {
+  try {
+    if (!llmAvailable()) return res.json({ flags: [], facts: null, skipped: 'no-api-key' });
+    if (!req.body?.documentText?.trim()) return res.status(400).json({ error: 'No document.' });
+    const existingFlags = req.body.existingFlags || [];
+    const { facts, rawFlags, truncated } = await llmQuickEnrich(req.body.documentText, { existingFlags });
+    let flags = normalizeLlmFlags(rawFlags, { text: req.body.documentText, pages: req.body.pages || [], existingFlags });
+    flags = applyTierPosture(flags, Number(req.body.tier) === 1 ? 1 : 2);
+    res.json({ flags, facts, truncated });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

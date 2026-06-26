@@ -315,6 +315,7 @@ async function analyze(){
     if(!res.ok) throw new Error(data.error||'Analysis failed');
     state.docText=payload.text; state.pages=payload.pages; state.chat=[];
     openReview(data.analysis,chosen.isPdf);
+    if(body.llm) runEnrich();
   }catch(err){ setStatus(' <span class="err">'+esc(err.message)+'</span>'); $('analyzeBtn').disabled=false; }
 }
 function getBid(){
@@ -408,7 +409,7 @@ function renderSummary(a){
       <span class="chip">${s.incorporatedDocs} incorporated</span>
       <span class="chip">${s.contestedItems} contested</span>
       <span class="chip">${s.attorneyReviewItems} ⚖️ atty</span>
-      ${a.llm&&a.llm.used?'<span class="chip">🤖 '+a.llm.addedFlags+' AI-found</span>':''}
+      ${a.llm&&a.llm.used?'<span class="chip">🤖 '+a.llm.addedFlags+' AI-found</span>':a.llm&&a.llm.pending?'<span class="chip">🤖 Claude pass running…</span>':''}
       ${x.ocrUsed?'<span class="chip">OCR '+(x.ocrPages||[]).length+' pg</span>':''}
     </div>
     <div class="filters" id="filters">
@@ -434,6 +435,44 @@ function renderComments(a){
     el.onclick=()=>{document.querySelectorAll('.comment.sel').forEach(c=>c.classList.remove('sel'));el.classList.add('sel');if(loc.page)locateInDoc(loc.page,loc.quote||loc.clauseText||'');};
     box.appendChild(el);
   });
+}
+// Optional Claude pass — runs after the rules result is already shown, then
+// merges any AI-found clauses in. Best-effort: failure leaves findings intact.
+async function runEnrich(){
+  const a=state.analysis;
+  a.llm={pending:true}; renderSummary(a);
+  try{
+    const r=await fetch('/api/enrich',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+      documentText:state.docText, pages:state.pages, tier:a.tier,
+      existingFlags:a.flags.map(f=>({category:f.category,title:f.title})),
+    })});
+    if(!r.ok) throw new Error('enrich failed');
+    const d=await r.json();
+    if(d.skipped){ a.llm={used:false,reason:'no API key'}; renderSummary(a); return; }
+    if(d.flags&&d.flags.length){
+      const rank={HIGH:0,MEDIUM:1,LOW:2};
+      a.flags=[...a.flags,...d.flags].sort((x,y)=>x.category.localeCompare(y.category)||rank[x.severity]-rank[y.severity]);
+    }
+    if(d.facts) fillFacts(a.metadata,d.facts);
+    a.llm={used:true,addedFlags:(d.flags||[]).length};
+    recountSummary(a); renderSummary(a); renderComments(a); renderExtra(a);
+  }catch(e){ a.llm={used:false,reason:'AI pass unavailable for this document'}; renderSummary(a); }
+}
+function fillFacts(m,f){
+  const set=(k,v)=>{ if((m[k]==null||m[k]==='')&&v) m[k]=v; };
+  set('contractType',f.contractType); set('project',f.project); set('contractor',f.contractor);
+  set('subcontractor',f.subcontractor); set('contractValue',f.contractValue);
+  if(f.prevailingWage) m.prevailingWage=true;
+  if(!m.scopeSnippet&&f.scopeSummary) m.scopeSnippet=f.scopeSummary;
+}
+function recountSummary(a){
+  const c=(list)=>({HIGH:list.filter(x=>x.severity==='HIGH').length,MEDIUM:list.filter(x=>x.severity==='MEDIUM').length,LOW:list.filter(x=>x.severity==='LOW').length,total:list.length});
+  const f=a.flags;
+  a.summary.all=c(f);
+  a.summary.negotiate=c(f.filter(x=>x.posture==='negotiate'));
+  a.summary.acceptAndProceed=c(f.filter(x=>x.posture==='accept-and-proceed'));
+  a.summary.attorneyReviewItems=f.filter(x=>x.attorneyReview).length;
+  a.summary.contestedItems=f.filter(x=>x.confidence==='contested').length;
 }
 function renderExtra(a){
   let h='';

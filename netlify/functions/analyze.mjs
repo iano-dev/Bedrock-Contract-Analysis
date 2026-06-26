@@ -3,9 +3,11 @@
 // native binaries, no file handling. Set ANTHROPIC_API_KEY in the Netlify site
 // environment to enable the Claude-assisted pass.
 
-import { runAnalysis } from '../../src/engine/run.js';
+import { analyze } from '../../src/engine/analyze.js';
 import { authEnabled, userFromCookieHeader } from '../../src/auth/session.js';
 
+// Rules engine only — fast and never times out. The optional Claude pass runs
+// separately via /api/enrich so a slow LLM call can't break the main analysis.
 export default async (req) => {
   if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
   if (authEnabled() && !(await userFromCookieHeader(req.headers.get('cookie')))) {
@@ -21,7 +23,15 @@ export default async (req) => {
     return json({ error: 'No contract text supplied (extraction may have failed in the browser).' }, 400);
   }
   try {
-    const analysis = await runAnalysis(body);
+    const analysis = analyze({
+      text: body.text,
+      pages: body.pages,
+      fileName: body.fileName,
+      tier: body.tier,
+      bidAssumptions: body.bidAssumptions,
+    });
+    if (body.extraction) analysis.extraction = body.extraction;
+    analysis.llm = { used: false };
     return json({ analysis });
   } catch (e) {
     return json({ error: e.message }, 500);
