@@ -184,7 +184,14 @@ export function normalizeLlmFlags(rawFlags, { text, pages, existingFlags = [] })
       action: f.action,
       note: null,
       occurrences: 1,
-      locations: [{ page, article: null, clauseText: f.clauseText }],
+      locations: [
+        {
+          page,
+          article: null,
+          clauseText: f.clauseText,
+          quote: (f.clauseText || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+        },
+      ],
     });
   }
   return out;

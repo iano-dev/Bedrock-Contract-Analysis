@@ -1,5 +1,6 @@
-// Minimal local web UI: upload a subcontract PDF, pick a tier (or auto-suggest),
-// optionally paste bid assumptions, and download all three deliverables.
+// Web UI: a document-review workspace. Upload a subcontract (drag-and-drop,
+// file picker, or Google Drive), analyze it, then review findings side-by-side
+// with the rendered PDF — click a finding to highlight where it lives in the doc.
 
 import express from 'express';
 import multer from 'multer';
@@ -14,27 +15,37 @@ const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
 app.use(express.static(join(__dirname, 'public')));
+// Serve the pdf.js *legacy* browser build locally so the viewer works offline
+// and on older corporate browsers (the modern build uses very new JS APIs).
+app.use('/vendor/pdfjs', express.static(join(__dirname, '..', 'node_modules', 'pdfjs-dist', 'legacy', 'build')));
 app.use(express.json());
 
-// In-memory cache of the last analysis per session-less token, so the download
-// routes can re-render without re-uploading. Keyed by a returned id.
-const cache = new Map();
+// In-memory store: id -> { analysis, buffer, mime, markdown }. The buffer is kept
+// so the viewer can re-fetch the original PDF for rendering.
+const store = new Map();
 let counter = 0;
 
-app.get('/api/counterparties', (_req, res) => {
-  res.json(loadCounterparties());
+app.get('/favicon.ico', (_req, res) => res.status(204).end());
+
+app.get('/api/config', (_req, res) => {
+  res.json({
+    googleClientId: process.env.GOOGLE_CLIENT_ID || null,
+    googleApiKey: process.env.GOOGLE_API_KEY || null,
+    llmConfigured: !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN),
+  });
 });
+
+app.get('/api/counterparties', (_req, res) => res.json(loadCounterparties()));
 
 app.post('/api/analyze', upload.single('contract'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
     const tier = req.body.tier && req.body.tier !== 'auto' ? Number(req.body.tier) : 'auto';
+    const llm = req.body.llm === 'on' ? true : req.body.llm === 'off' ? false : 'auto';
     let bidAssumptions = {};
     if (req.body.bidAssumptions) {
-      try { bidAssumptions = JSON.parse(req.body.bidAssumptions); } catch { /* ignore bad JSON */ }
+      try { bidAssumptions = JSON.parse(req.body.bidAssumptions); } catch { /* ignore */ }
     }
-    // llm: 'on' -> require, 'off' -> disable, anything else -> auto
-    const llm = req.body.llm === 'on' ? true : req.body.llm === 'off' ? false : 'auto';
     const analysis = await analyzePdfBuffer(req.file.buffer, {
       fileName: req.file.originalname,
       tier,
@@ -42,23 +53,32 @@ app.post('/api/analyze', upload.single('contract'), async (req, res) => {
       llm,
     });
     const id = `a${++counter}`;
-    cache.set(id, analysis);
-    if (cache.size > 50) cache.delete(cache.keys().next().value);
-    res.json({ id, analysis, markdown: buildMarkdown(analysis) });
+    const isPdf = (req.file.mimetype || '').includes('pdf') || /\.pdf$/i.test(req.file.originalname || '');
+    store.set(id, { analysis, buffer: req.file.buffer, mime: isPdf ? 'application/pdf' : req.file.mimetype });
+    if (store.size > 30) store.delete(store.keys().next().value);
+    res.json({ id, analysis, viewable: isPdf, markdown: buildMarkdown(analysis) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
+// Serve the original uploaded file back for in-browser rendering.
+app.get('/api/file/:id', (req, res) => {
+  const entry = store.get(req.params.id);
+  if (!entry) return res.status(404).send('Expired — re-upload.');
+  res.setHeader('Content-Type', entry.mime || 'application/octet-stream');
+  res.send(entry.buffer);
+});
+
 app.get('/api/download/:id.:fmt', async (req, res) => {
-  const analysis = cache.get(req.params.id);
-  if (!analysis) return res.status(404).send('Analysis expired — re-run.');
+  const entry = store.get(req.params.id);
+  if (!entry) return res.status(404).send('Analysis expired — re-run.');
+  const { analysis } = entry;
   const base = (analysis.metadata.project || analysis.fileName || 'analysis').replace(/[^a-z0-9]+/gi, '-').slice(0, 50);
   if (req.params.fmt === 'docx') {
-    const buf = await buildDocx(analysis);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.setHeader('Content-Disposition', `attachment; filename="${base}.docx"`);
-    return res.send(buf);
+    return res.send(await buildDocx(analysis));
   }
   if (req.params.fmt === 'md') {
     res.setHeader('Content-Type', 'text/markdown');
@@ -74,6 +94,4 @@ app.get('/api/download/:id.:fmt', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Bedrock Contract Analyzer web UI -> http://localhost:${PORT}`);
-});
+app.listen(PORT, () => console.log(`Bedrock Contract Analyzer web UI -> http://localhost:${PORT}`));

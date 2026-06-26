@@ -58,6 +58,10 @@ export function scanPatterns(text, pages = []) {
       page: pages.length ? offsetToPage(pages, h.index) : null,
       article: nearestArticle(text, h.index),
       clauseText: snippet(text, h.index, h.length),
+      // A clean ~160-char excerpt starting at the match, whitespace-normalized,
+      // used by the web viewer to find-and-highlight the clause in the rendered
+      // PDF (no ellipses, so it can be searched against the page text layer).
+      quote: text.slice(h.index, Math.min(text.length, h.index + 160)).replace(/\s+/g, ' ').trim(),
     }));
 
     flags.push({

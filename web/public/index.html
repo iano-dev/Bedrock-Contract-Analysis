@@ -5,158 +5,451 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Bedrock Contract Analyzer</title>
 <style>
-  :root { --hi:#b02a37; --med:#997404; --lo:#0f5132; --bg:#f6f7f9; --ink:#1f2328; --line:#d8dee4; }
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin:0; background:var(--bg); color:var(--ink); }
-  header { background:#343a40; color:#fff; padding:18px 24px; }
-  header h1 { margin:0; font-size:20px; }
-  header p { margin:4px 0 0; opacity:.8; font-size:13px; }
-  main { max-width:1100px; margin:0 auto; padding:24px; }
-  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:20px; margin-bottom:20px; }
-  label { display:block; font-weight:600; margin:12px 0 4px; font-size:14px; }
-  select, input[type=file], textarea { width:100%; padding:8px; border:1px solid var(--line); border-radius:6px; font:inherit; }
-  textarea { min-height:90px; font-family:ui-monospace,Menlo,monospace; font-size:12px; }
-  button { background:#0969da; color:#fff; border:0; padding:10px 18px; border-radius:6px; font-size:15px; cursor:pointer; margin-top:14px; }
-  button:disabled { opacity:.5; cursor:default; }
-  .row { display:flex; gap:16px; flex-wrap:wrap; }
-  .row > div { flex:1; min-width:220px; }
-  .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; color:#fff; }
-  .HIGH{background:var(--hi);} .MEDIUM{background:var(--med);} .LOW{background:var(--lo);}
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  th,td { border:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
-  th { background:#343a40; color:#fff; }
-  tr.HIGH td:first-child{background:#f8d7da;} tr.MEDIUM td:first-child{background:#fff3cd;} tr.LOW td:first-child{background:#d4edda;}
-  .muted{color:#57606a;font-size:13px;}
-  .downloads a { display:inline-block; margin-right:10px; }
+  :root{--hi:#b02a37;--med:#997404;--lo:#0f5132;--bg:#eef1f4;--panel:#fff;--ink:#1f2328;--line:#d8dee4;--accent:#0969da;}
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;}
+  body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink);display:flex;flex-direction:column;height:100vh;overflow:hidden;}
+  header{background:#343a40;color:#fff;padding:10px 18px;display:flex;align-items:center;gap:14px;flex:0 0 auto;}
+  header h1{margin:0;font-size:16px;font-weight:600;}
+  header .sub{opacity:.75;font-size:12px;}
+  header .spacer{flex:1;}
+  header button{background:#0969da;color:#fff;border:0;padding:7px 12px;border-radius:6px;font-size:13px;cursor:pointer;}
+  header button.ghost{background:transparent;border:1px solid #5a6169;}
+  header a.dl{color:#cfe2ff;font-size:13px;margin-left:10px;text-decoration:none;}
+  .pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:700;color:#fff;}
+  .HIGH{background:var(--hi);}.MEDIUM{background:var(--med);}.LOW{background:var(--lo);}
+
+  /* ---------- Upload view ---------- */
+  #upload{flex:1;display:flex;align-items:center;justify-content:center;padding:24px;overflow:auto;}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:26px;max-width:640px;width:100%;box-shadow:0 1px 3px rgba(0,0,0,.06);}
+  #drop{border:2px dashed #b6c0cc;border-radius:12px;padding:40px 20px;text-align:center;color:#57606a;transition:.15s;cursor:pointer;}
+  #drop.drag{border-color:var(--accent);background:#f0f6ff;color:var(--accent);}
+  #drop b{color:var(--ink);}
+  .opts{display:flex;gap:14px;flex-wrap:wrap;margin-top:16px;}
+  .opts > div{flex:1;min-width:200px;}
+  label{display:block;font-weight:600;margin:10px 0 4px;font-size:13px;}
+  select,textarea{width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;font:inherit;}
+  textarea{min-height:64px;font-family:ui-monospace,Menlo,monospace;font-size:12px;}
+  .row2{display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap;}
+  .btn{background:var(--accent);color:#fff;border:0;padding:10px 18px;border-radius:6px;font-size:15px;cursor:pointer;}
+  .btn:disabled{opacity:.5;cursor:default;}
+  .btn.alt{background:#fff;color:var(--ink);border:1px solid var(--line);}
+  .btn.alt[disabled]{opacity:.55;}
+  .muted{color:#57606a;font-size:12px;}
   .err{color:var(--hi);font-weight:600;}
-  details{margin-top:10px;}
-  pre{white-space:pre-wrap;background:#f6f8fa;border:1px solid var(--line);padding:12px;border-radius:6px;font-size:12px;overflow:auto;max-height:420px;}
-  .stat{display:inline-block;margin-right:18px;font-size:14px;}
-  .stat b{font-size:20px;}
+  #fileChosen{font-size:13px;margin-top:10px;}
+
+  /* ---------- Review view ---------- */
+  #review{flex:1;display:none;min-height:0;}
+  .reviewer{display:flex;height:100%;min-height:0;}
+  .docpane{flex:1 1 58%;min-width:120px;background:#5b626b;overflow:auto;position:relative;}
+  .doctools{position:sticky;top:0;z-index:5;background:#41474e;color:#fff;padding:6px 10px;display:flex;gap:8px;align-items:center;font-size:12px;}
+  .doctools button{background:#5a6169;color:#fff;border:0;border-radius:5px;padding:4px 9px;cursor:pointer;font-size:12px;}
+  .pages{padding:16px;display:flex;flex-direction:column;align-items:center;gap:14px;}
+  .page{position:relative;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.35);}
+  .page canvas{display:block;}
+  .page .overlay{position:absolute;inset:0;pointer-events:none;}
+  .page .hl{position:absolute;background:rgba(255,213,0,.40);outline:1px solid rgba(176,42,55,.7);border-radius:2px;}
+  .page.flash{animation:flash 1.2s ease;}
+  @keyframes flash{0%{box-shadow:0 0 0 4px var(--accent);}100%{box-shadow:0 2px 8px rgba(0,0,0,.35);}}
+  .pagenum{position:absolute;top:4px;right:6px;background:rgba(0,0,0,.5);color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;}
+
+  .gutter{flex:0 0 6px;background:var(--line);cursor:col-resize;}
+  .gutter:hover{background:var(--accent);}
+
+  .sidepane{flex:1 1 42%;min-width:240px;background:var(--panel);overflow:auto;border-left:1px solid var(--line);}
+  .summary{padding:12px 14px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:3;}
+  .summary h2{margin:0 0 4px;font-size:15px;}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;font-size:12px;}
+  .chip{background:#f0f3f6;border:1px solid var(--line);border-radius:999px;padding:2px 9px;}
+  .filters{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;}
+  .filters button{font-size:12px;border:1px solid var(--line);background:#fff;border-radius:999px;padding:3px 10px;cursor:pointer;}
+  .filters button.on{background:var(--accent);color:#fff;border-color:var(--accent);}
+
+  .comments{padding:8px 10px;}
+  .comment{border:1px solid var(--line);border-left-width:4px;border-radius:8px;padding:10px 12px;margin-bottom:10px;cursor:pointer;transition:.12s;}
+  .comment:hover{box-shadow:0 2px 8px rgba(0,0,0,.08);transform:translateY(-1px);}
+  .comment.sel{border-color:var(--accent);box-shadow:0 0 0 2px rgba(9,105,218,.25);}
+  .comment.s-HIGH{border-left-color:var(--hi);}.comment.s-MEDIUM{border-left-color:var(--med);}.comment.s-LOW{border-left-color:var(--lo);}
+  .comment .top{display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
+  .comment .title{font-weight:600;font-size:13.5px;flex:1;}
+  .comment .loc{font-size:11px;color:var(--accent);font-weight:600;white-space:nowrap;}
+  .comment .why{font-size:12.5px;color:#3a414a;margin-top:6px;}
+  .comment .action{font-size:12.5px;margin-top:6px;}
+  .comment .action b{color:#000;}
+  .tag{font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;}
+  .tag.atty{background:#efe6fb;color:#6f42c1;}
+  .tag.ai{background:#e3effd;color:#0969da;}
+  .tag.contested{background:#fdeaea;color:#b02a37;}
+  .tag.accept{background:#eef1f4;color:#57606a;}
+  .quote{font-size:11.5px;color:#57606a;font-style:italic;margin-top:6px;border-left:2px solid var(--line);padding-left:8px;}
+  .section-extra{padding:10px 12px;border-top:1px solid var(--line);font-size:12.5px;}
+  .section-extra h3{margin:0 0 6px;font-size:13px;}
+  .section-extra ul{margin:4px 0;padding-left:18px;}
+  details summary{cursor:pointer;font-weight:600;font-size:13px;}
+  pre{white-space:pre-wrap;background:#f6f8fa;border:1px solid var(--line);padding:10px;border-radius:6px;font-size:11.5px;max-height:320px;overflow:auto;}
+  #status{font-size:13px;}
 </style>
 </head>
 <body>
 <header>
   <h1>Bedrock Contract Analyzer</h1>
-  <p>Tiered triage · clause flagging · written report + risk table + phased checklist · GC-response email variants</p>
+  <span class="sub" id="hdrsub">Upload a subcontract to review</span>
+  <span class="spacer"></span>
+  <span id="hdrdl"></span>
+  <button id="newBtn" class="ghost" style="display:none">New analysis</button>
 </header>
-<main>
+
+<!-- ===================== UPLOAD VIEW ===================== -->
+<div id="upload">
   <div class="card">
-    <form id="form">
-      <label>Subcontract PDF</label>
-      <input type="file" id="file" accept="application/pdf,.pdf,.txt" required />
-      <div class="row">
-        <div>
-          <label>Counterparty tier</label>
-          <select id="tier">
-            <option value="auto">Auto-suggest (default · unknown → Tier 2 full review)</option>
-            <option value="1">Tier 1 — large/blue-chip GC (accept-most; scope + schedule)</option>
-            <option value="2">Tier 2 — full review, flag everything</option>
-          </select>
-        </div>
-        <div>
-          <label>Claude-assisted pass</label>
-          <select id="llm">
-            <option value="auto">Auto (use Claude if an API key is configured)</option>
-            <option value="on">On — require the Claude pass</option>
-            <option value="off">Off — rules engine only</option>
-          </select>
-        </div>
+    <div id="drop">
+      <p style="font-size:17px;margin:.2em 0"><b>Drag &amp; drop</b> a subcontract PDF here</p>
+      <p class="muted">or click to browse · or pull from Google Drive</p>
+      <div id="fileChosen"></div>
+    </div>
+    <input type="file" id="file" accept="application/pdf,.pdf,.txt" hidden />
+
+    <div class="row2">
+      <button type="button" class="btn alt" id="browseBtn">Choose file</button>
+      <button type="button" class="btn alt" id="driveBtn" disabled title="Set GOOGLE_CLIENT_ID and GOOGLE_API_KEY to enable">Google Drive</button>
+    </div>
+
+    <div class="opts">
+      <div>
+        <label>Counterparty tier</label>
+        <select id="tier">
+          <option value="auto">Auto-suggest (unknown → Tier 2)</option>
+          <option value="1">Tier 1 — blue-chip GC (scope + schedule)</option>
+          <option value="2">Tier 2 — full review</option>
+        </select>
       </div>
-      <label>Bid assumptions (optional JSON — enables bid-vs-schedule cross-check)</label>
-      <textarea id="bid" placeholder='{ "basis": "straight-time", "pricedMobilizations": 1, "additionalMobRate": 350, "standbyRate": 150 }'></textarea>
-      <button id="go" type="submit">Analyze</button>
+      <div>
+        <label>Claude-assisted pass</label>
+        <select id="llm">
+          <option value="auto">Auto (use if API key configured)</option>
+          <option value="on">On</option>
+          <option value="off">Off — rules engine only</option>
+        </select>
+      </div>
+    </div>
+    <label>Bid assumptions (optional JSON — enables bid-vs-schedule cross-check)</label>
+    <textarea id="bid" placeholder='{ "basis": "straight-time", "pricedMobilizations": 1, "additionalMobRate": 350, "standbyRate": 150 }'></textarea>
+
+    <div class="row2">
+      <button class="btn" id="analyzeBtn" disabled>Analyze</button>
       <span id="status" class="muted"></span>
-    </form>
-  </div>
-
-  <div id="results" style="display:none">
-    <div class="card" id="summary"></div>
-    <div class="card">
-      <h3>Risk-rated summary table</h3>
-      <div id="table"></div>
-    </div>
-    <div class="card downloads">
-      <h3>Deliverables (generated simultaneously)</h3>
-      <p id="dl"></p>
-      <details><summary>Full Markdown report</summary><pre id="md"></pre></details>
     </div>
   </div>
-</main>
+</div>
 
-<script>
-const form = document.getElementById('form');
-const statusEl = document.getElementById('status');
+<!-- ===================== REVIEW VIEW ===================== -->
+<div id="review">
+  <div class="reviewer">
+    <div class="docpane" id="docpane">
+      <div class="doctools">
+        <span id="docname"></span>
+        <span style="flex:1"></span>
+        <button id="zoomOut">–</button><span id="zoomLbl">100%</span><button id="zoomIn">+</button>
+      </div>
+      <div class="pages" id="pages"></div>
+    </div>
+    <div class="gutter" id="gutter"></div>
+    <div class="sidepane" id="sidepane">
+      <div class="summary" id="summary"></div>
+      <div class="comments" id="comments"></div>
+      <div class="section-extra" id="extra"></div>
+    </div>
+  </div>
+</div>
 
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const file = document.getElementById('file').files[0];
-  if (!file) return;
-  const fd = new FormData();
-  fd.append('contract', file);
-  fd.append('tier', document.getElementById('tier').value);
-  fd.append('llm', document.getElementById('llm').value);
-  const bid = document.getElementById('bid').value.trim();
-  if (bid) fd.append('bidAssumptions', bid);
+<script type="module">
+import * as pdfjsLib from '/vendor/pdfjs/pdf.min.mjs';
+pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.mjs';
 
-  document.getElementById('go').disabled = true;
-  statusEl.textContent = ' Analyzing…';
-  try {
-    const res = await fetch('/api/analyze', { method:'POST', body: fd });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Analysis failed');
-    render(data);
-  } catch (err) {
-    statusEl.innerHTML = ' <span class="err">' + err.message + '</span>';
-  } finally {
-    document.getElementById('go').disabled = false;
+let CONFIG = {};
+let chosenFile = null;
+let state = { id:null, analysis:null, pdf:null, scale:1.3, rendered:new Map(), filter:'ALL', selected:null };
+
+const $ = (id)=>document.getElementById(id);
+const esc=(s)=>(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// ---------- config + Drive ----------
+fetch('/api/config').then(r=>r.json()).then(c=>{ CONFIG=c; if(c.googleClientId&&c.googleApiKey) enableDrive(); });
+
+// ---------- upload interactions ----------
+const drop=$('drop'), fileInput=$('file');
+$('browseBtn').onclick=()=>fileInput.click();
+drop.onclick=()=>fileInput.click();
+['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('drag');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('drag');}));
+drop.addEventListener('drop',e=>{ if(e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); });
+fileInput.onchange=()=>{ if(fileInput.files[0]) setFile(fileInput.files[0]); };
+
+function setFile(f){ chosenFile=f; $('fileChosen').innerHTML='Selected: <b>'+esc(f.name)+'</b> ('+Math.round(f.size/1024)+' KB)'; $('analyzeBtn').disabled=false; }
+
+$('analyzeBtn').onclick=analyze;
+$('newBtn').onclick=()=>{ location.reload(); };
+
+async function analyze(){
+  if(!chosenFile) return;
+  const fd=new FormData();
+  fd.append('contract',chosenFile);
+  fd.append('tier',$('tier').value);
+  fd.append('llm',$('llm').value);
+  const bid=$('bid').value.trim(); if(bid) fd.append('bidAssumptions',bid);
+  $('analyzeBtn').disabled=true; $('status').innerHTML=' Analyzing… (OCR + analysis can take a moment)';
+  try{
+    const res=await fetch('/api/analyze',{method:'POST',body:fd});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Analysis failed');
+    openReview(data);
+  }catch(err){ $('status').innerHTML=' <span class="err">'+esc(err.message)+'</span>'; $('analyzeBtn').disabled=false; }
+}
+
+// ---------- review view ----------
+async function openReview(data){
+  state.id=data.id; state.analysis=data.analysis;
+  $('upload').style.display='none'; $('review').style.display='block'; $('newBtn').style.display='inline-block';
+  const a=data.analysis;
+  $('hdrsub').textContent=(a.metadata.project||a.fileName||'')+' · Tier '+a.tier;
+  $('hdrdl').innerHTML=`<a class="dl" href="/api/download/${data.id}.docx">⬇ Word</a><a class="dl" href="/api/download/${data.id}.md">⬇ Markdown</a><a class="dl" href="/api/download/${data.id}.json">⬇ JSON</a>`;
+  $('docname').textContent=esc(a.fileName||'document');
+  renderSummary(a); renderComments(a); renderExtra(a,data.markdown);
+
+  if(data.viewable){ try{ await loadPdf(data.id); }catch(e){ $('pages').innerHTML='<p style="color:#fff;padding:20px">Could not render PDF: '+esc(e.message)+'</p>'; } }
+  else { $('pages').innerHTML='<p style="color:#fff;padding:20px">Document preview is available for PDF uploads. Findings are shown on the right.</p>'; }
+}
+
+function counts(a){ return a.tier===1 ? a.summary.negotiate : a.summary.all; }
+function renderSummary(a){
+  const c=counts(a), s=a.summary, x=a.extraction||{};
+  $('summary').innerHTML=`
+    <h2>${esc(a.metadata.project||a.fileName||'Analysis')}</h2>
+    <div class="muted">Tier ${a.tier} — ${esc(a.tierSuggestion.reason)}</div>
+    <div class="chips">
+      <span class="chip"><span class="pill HIGH">${c.HIGH}</span> high</span>
+      <span class="chip"><span class="pill MEDIUM">${c.MEDIUM}</span> med</span>
+      <span class="chip"><span class="pill LOW">${c.LOW}</span> low</span>
+      <span class="chip">${s.incorporatedDocs} incorporated</span>
+      <span class="chip">${s.contestedItems} contested</span>
+      <span class="chip">${s.attorneyReviewItems} ⚖️ atty</span>
+      ${a.llm&&a.llm.used?'<span class="chip">🤖 '+a.llm.addedFlags+' AI-found</span>':''}
+      ${x.ocrUsed?'<span class="chip">OCR '+(x.ocrPages||[]).length+' pg</span>':''}
+    </div>
+    <div class="filters" id="filters">
+      <button data-f="ALL" class="on">All (${a.flags.length})</button>
+      <button data-f="HIGH">High</button>
+      <button data-f="MEDIUM">Med</button>
+      <button data-f="LOW">Low</button>
+      <button data-f="ATTY">⚖️ Attorney</button>
+      <button data-f="AI">🤖 AI-found</button>
+    </div>`;
+  $('filters').querySelectorAll('button').forEach(b=>b.onclick=()=>{
+    state.filter=b.dataset.f;
+    $('filters').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
+    renderComments(a);
+  });
+}
+
+function passesFilter(f){
+  switch(state.filter){
+    case 'HIGH': case 'MEDIUM': case 'LOW': return f.severity===state.filter;
+    case 'ATTY': return f.attorneyReview;
+    case 'AI': return f.source==='llm';
+    default: return true;
   }
-});
+}
 
-function esc(s){ return (s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
-
-function render(data){
-  statusEl.textContent='';
-  const a = data.analysis;
-  document.getElementById('results').style.display='block';
-  const s = a.summary;
-  const c = a.tier===1 ? s.negotiate : s.all;
-  document.getElementById('summary').innerHTML = `
-    <h3>${esc(a.metadata.project || a.fileName || 'Analysis')}</h3>
-    <p class="muted">Tier ${a.tier} — ${esc(a.tierSuggestion.reason)}</p>
-    <div>
-      <span class="stat"><b>${c.HIGH}</b> <span class="pill HIGH">HIGH</span></span>
-      <span class="stat"><b>${c.MEDIUM}</b> <span class="pill MEDIUM">MEDIUM</span></span>
-      <span class="stat"><b>${c.LOW}</b> <span class="pill LOW">LOW</span></span>
-      <span class="stat"><b>${s.incorporatedDocs}</b> incorporated docs</span>
-      <span class="stat"><b>${s.contestedItems}</b> contested</span>
-      <span class="stat"><b>${s.attorneyReviewItems}</b> attorney-review</span>
-    </div>
-    <p class="muted">${esc(a.metadata.contractType)}${a.metadata.contractValue ? ' · '+esc(a.metadata.contractValue) : ''}${a.extraction ? ' · '+a.extraction.pageCount+' pages' : ''}${(a.extraction && a.extraction.ocrUsed) ? ' · OCR: '+(a.extraction.ocrPages||[]).length+' scanned page(s)' : ''}</p>
-    <p class="muted">${a.llm && a.llm.used ? '🤖 Rules engine + Claude-assisted pass ('+esc(a.llm.model)+') — '+a.llm.addedFlags+' AI-found clause(s)' : 'Rules engine only'+(a.llm && a.llm.reason ? ' ('+esc(a.llm.reason)+')' : '')}</p>
-    ${(a.extraction && a.extraction.warnings && a.extraction.warnings.length) ? '<p class="muted">'+a.extraction.warnings.map(esc).join('<br>')+'</p>' : ''}`;
-
-  const rows = a.flags.map(f=>{
+function renderComments(a){
+  const box=$('comments'); box.innerHTML='';
+  const list=a.flags.filter(passesFilter);
+  if(!list.length){ box.innerHTML='<p class="muted">No findings match this filter.</p>'; return; }
+  list.forEach((f,i)=>{
     const loc=f.locations[0]||{};
-    const where=[loc.article, loc.page?('p.'+loc.page):null].filter(Boolean).join(', ')||'—';
-    const tags=[f.attorneyReview?'⚖️':'', f.source==='llm'?'🤖':'', (a.tier===1&&f.posture!=='negotiate')?'<span class="muted">[accept-and-proceed]</span>':''].join(' ');
-    return `<tr class="${f.severity}">
-      <td><span class="pill ${f.severity}">${f.severity}</span></td>
-      <td><b>${esc(f.title)}</b> ${tags}<br><span class="muted">${esc((loc.clauseText||'').slice(0,160))}</span></td>
-      <td>${f.category}</td>
-      <td>${f.confidence==='contested'?'<b class="err">CONTESTED</b>':'firm'}</td>
-      <td>${esc(where)}</td>
-      <td>${esc(f.action)}</td></tr>`;
-  }).join('');
-  document.getElementById('table').innerHTML = a.flags.length
-    ? `<table><thead><tr><th>Sev</th><th>Issue</th><th>Cat</th><th>Conf</th><th>Loc</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table>`
-    : '<p class="muted">No taxonomy patterns matched — verify extraction quality and review manually.</p>';
+    const where=[loc.article, loc.page?('p.'+loc.page):null].filter(Boolean).join(' · ')||'—';
+    const tags=[
+      f.confidence==='contested'?'<span class="tag contested">CONTESTED</span>':'',
+      f.attorneyReview?'<span class="tag atty">⚖️ atty</span>':'',
+      f.source==='llm'?'<span class="tag ai">🤖 AI</span>':'',
+      (a.tier===1&&f.posture!=='negotiate')?'<span class="tag accept">accept-and-proceed</span>':''
+    ].join(' ');
+    const el=document.createElement('div');
+    el.className='comment s-'+f.severity;
+    el.dataset.idx=i;
+    el.innerHTML=`
+      <div class="top"><span class="pill ${f.severity}">${f.severity}</span><span class="title">${esc(f.title)}</span><span class="loc">${esc(where)}</span></div>
+      <div>${tags}</div>
+      ${loc.clauseText?`<div class="quote">“${esc(loc.clauseText)}”</div>`:''}
+      <div class="why">${esc(f.why)}</div>
+      <div class="action"><b>Action:</b> ${esc(f.action)}</div>`;
+    el.onclick=()=>{ selectComment(el, f); };
+    box.appendChild(el);
+  });
+}
 
-  document.getElementById('dl').innerHTML =
-    `<a href="/api/download/${data.id}.docx">⬇ Word (.docx)</a>` +
-    `<a href="/api/download/${data.id}.md">⬇ Markdown</a>` +
-    `<a href="/api/download/${data.id}.json">⬇ JSON</a>`;
-  document.getElementById('md').textContent = data.markdown;
+function selectComment(el, f){
+  document.querySelectorAll('.comment.sel').forEach(c=>c.classList.remove('sel'));
+  el.classList.add('sel');
+  const loc=f.locations[0];
+  if(loc && loc.page) locateInDoc(loc.page, loc.quote||loc.clauseText||'');
+}
+
+function renderExtra(a, markdown){
+  let h='';
+  if(a.incorporated && a.incorporated.count){
+    h+='<h3>Incorporated documents — retrieve before signing</h3><ul>'+
+      a.incorporated.entries.map(e=>'<li>'+esc(e.name)+(e.topicHint?(' — '+esc(e.topicHint)):'')+(e.page?(' (p.'+e.page+')'):'')+'</li>').join('')+'</ul>';
+  }
+  if(a.favorable && a.favorable.length){
+    h+='<h3>Favorable &amp; protective terms</h3><ul>'+a.favorable.map(x=>'<li>✅ '+esc(x.label)+'</li>').join('')+'</ul>';
+  }
+  if(a.crossCheck && a.crossCheck.candidates && a.crossCheck.candidates.length){
+    h+='<h3>Bid-vs-schedule cross-check</h3><ul>'+a.crossCheck.candidates.map(c=>'<li><b>'+esc(c.title)+'</b> ('+esc(c.confidence)+')'+(c.candidateCO?(' — CO: '+esc(c.candidateCO)):'')+'</li>').join('')+'</ul>';
+  }
+  h+='<details style="margin-top:8px"><summary>Full written report &amp; phased checklist</summary><pre>'+esc(markdown)+'</pre></details>';
+  h+='<details style="margin-top:8px"><summary>Standing caveats</summary><ul>'+a.caveats.map(c=>'<li>'+esc(c)+'</li>').join('')+'</ul></details>';
+  $('extra').innerHTML=h;
+}
+
+// ---------- PDF rendering + locate/highlight ----------
+async function loadPdf(id){
+  state.pdf=await pdfjsLib.getDocument({url:'/api/file/'+id}).promise;
+  const pagesEl=$('pages'); pagesEl.innerHTML='';
+  state.rendered.clear();
+  for(let n=1;n<=state.pdf.numPages;n++){
+    const div=document.createElement('div'); div.className='page'; div.dataset.page=n;
+    div.innerHTML='<div class="pagenum">'+n+'</div>';
+    pagesEl.appendChild(div);
+  }
+  // Lazy-render pages as they approach the viewport.
+  const io=new IntersectionObserver((entries)=>{
+    entries.forEach(en=>{ if(en.isIntersecting) renderPage(Number(en.target.dataset.page)); });
+  },{root:$('docpane'),rootMargin:'600px'});
+  pagesEl.querySelectorAll('.page').forEach(p=>io.observe(p));
+  $('zoomIn').onclick=()=>setZoom(state.scale+0.2);
+  $('zoomOut').onclick=()=>setZoom(Math.max(0.5,state.scale-0.2));
+}
+
+async function renderPage(n){
+  if(state.rendered.has(n)) return state.rendered.get(n);
+  const div=$('pages').querySelector(`.page[data-page="${n}"]`);
+  const page=await state.pdf.getPage(n);
+  const viewport=page.getViewport({scale:state.scale});
+  const canvas=document.createElement('canvas');
+  canvas.width=Math.ceil(viewport.width); canvas.height=Math.ceil(viewport.height);
+  div.style.width=canvas.width+'px'; div.style.height=canvas.height+'px';
+  const overlay=document.createElement('div'); overlay.className='overlay';
+  div.appendChild(canvas); div.appendChild(overlay);
+  await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
+  const textContent=await page.getTextContent();
+  const info={page,viewport,overlay,textContent,div};
+  state.rendered.set(n,info);
+  return info;
+}
+
+function setZoom(s){
+  state.scale=s; $('zoomLbl').textContent=Math.round(s*100)+'%';
+  const open=[...state.rendered.keys()];
+  state.rendered.clear();
+  $('pages').querySelectorAll('.page').forEach(p=>{ p.querySelector('canvas')?.remove(); p.querySelector('.overlay')?.remove(); });
+  open.forEach(n=>renderPage(n));
+}
+
+async function locateInDoc(pageNum, quote){
+  const info=await renderPage(pageNum);
+  info.div.scrollIntoView({behavior:'smooth',block:'start'});
+  const rects=findRects(info, quote);
+  // clear old highlights
+  $('pages').querySelectorAll('.hl').forEach(h=>h.remove());
+  if(!rects.length){ info.div.classList.remove('flash'); void info.div.offsetWidth; info.div.classList.add('flash'); return; }
+  rects.forEach(r=>{ const d=document.createElement('div'); d.className='hl'; d.style.left=r.x+'px'; d.style.top=r.y+'px'; d.style.width=r.w+'px'; d.style.height=r.h+'px'; info.overlay.appendChild(d); });
+  // scroll the first highlight into comfortable view
+  const first=rects[0];
+  const target=info.div.offsetTop+first.y-120;
+  $('docpane').scrollTo({top:target,behavior:'smooth'});
+}
+
+// Find bounding boxes for `quote` within a page's text items.
+function findRects(info, quote){
+  if(!quote) return [];
+  const items=info.textContent.items.filter(it=>it.str && it.str.trim());
+  if(!items.length) return [];
+  // Build a normalized concatenated string with per-item ranges.
+  let norm=''; const ranges=[];
+  items.forEach((it)=>{
+    const s=it.str.replace(/\s+/g,' ');
+    if(norm && !norm.endsWith(' ')) norm+=' ';
+    const start=norm.length; norm+=s; ranges.push({start,end:norm.length,it});
+  });
+  const hay=norm.toLowerCase();
+  const q=quote.toLowerCase().replace(/\s+/g,' ').trim();
+  let qi=-1, used=q;
+  for(const len of [q.length, 80, 50, 30, 18]){
+    used=q.slice(0,len); qi=hay.indexOf(used); if(qi>=0) break;
+  }
+  if(qi<0) return [];
+  const qs=qi, qe=qi+used.length;
+  const hit=ranges.filter(r=>r.end>qs && r.start<qe);
+  return hit.map(r=>rectFor(r.it, info.viewport));
+}
+
+function rectFor(it, viewport){
+  const t=pdfjsLib.Util.transform(viewport.transform, it.transform);
+  const x=t[4], yBaseline=t[5];
+  const h=Math.hypot(t[2],t[3]) || (it.height*viewport.scale) || 12;
+  const w=(it.width*viewport.scale) || (it.str.length*h*0.5);
+  return {x, y:yBaseline-h, w, h:h*1.15};
+}
+
+// ---------- resizable split ----------
+(function(){
+  const gutter=$('gutter'), docpane=$('docpane'), reviewer=()=>document.querySelector('.reviewer');
+  let dragging=false;
+  gutter.addEventListener('mousedown',e=>{ dragging=true; e.preventDefault(); document.body.style.cursor='col-resize'; });
+  window.addEventListener('mouseup',()=>{ dragging=false; document.body.style.cursor=''; });
+  window.addEventListener('mousemove',e=>{
+    if(!dragging) return;
+    const r=reviewer().getBoundingClientRect();
+    let left=e.clientX-r.left;
+    left=Math.max(140, Math.min(r.width-260, left));
+    docpane.style.flex='0 0 '+left+'px';
+  });
+})();
+
+// ---------- Google Drive (gated) ----------
+function enableDrive(){
+  const btn=$('driveBtn'); btn.title='Pick a file from Google Drive';
+  // Load Google Identity Services + Picker.
+  let pickerReady=false, tokenClient=null, accessToken=null;
+  const load=(src)=>new Promise((ok,bad)=>{const s=document.createElement('script');s.src=src;s.onload=ok;s.onerror=bad;document.head.appendChild(s);});
+  Promise.all([load('https://accounts.google.com/gsi/client'), load('https://apis.google.com/js/api.js')]).then(()=>{
+    gapi.load('picker',()=>{pickerReady=true; btn.disabled=false;});
+    tokenClient=google.accounts.oauth2.initTokenClient({
+      client_id:CONFIG.googleClientId,
+      scope:'https://www.googleapis.com/auth/drive.file',
+      callback:(resp)=>{ accessToken=resp.access_token; showPicker(); }
+    });
+  }).catch(()=>{ btn.title='Could not load Google APIs (offline?)'; });
+
+  btn.disabled=false;
+  btn.onclick=()=>{ if(!pickerReady) return; if(accessToken) showPicker(); else tokenClient.requestAccessToken(); };
+
+  function showPicker(){
+    const view=new google.picker.DocsView(google.picker.ViewId.DOCS).setMimeTypes('application/pdf');
+    const picker=new google.picker.PickerBuilder()
+      .addView(view).setOAuthToken(accessToken).setDeveloperKey(CONFIG.googleApiKey)
+      .setCallback(async (d)=>{
+        if(d.action!==google.picker.Action.PICKED) return;
+        const doc=d.docs[0];
+        $('status').textContent=' Downloading from Drive…';
+        const r=await fetch('https://www.googleapis.com/drive/v3/files/'+doc.id+'?alt=media',{headers:{Authorization:'Bearer '+accessToken}});
+        const blob=await r.blob();
+        setFile(new File([blob], doc.name||'drive.pdf', {type:'application/pdf'}));
+        $('status').textContent='';
+      }).build();
+    picker.setVisible(true);
+  }
 }
 </script>
 </body>

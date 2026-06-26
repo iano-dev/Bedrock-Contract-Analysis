@@ -52,13 +52,31 @@ Outputs `*.report.md`, `*.report.docx`, and `*.analysis.json` to `./output/` (ov
 { "basis": "straight-time", "pricedMobilizations": 1, "additionalMobRate": 350, "standbyRate": 150, "pricedSaturdayWork": false }
 ```
 
-## Use — Web UI
+## Use — Web UI (document-review workspace)
 
 ```bash
 npm run web      # http://localhost:3000
 ```
 
-Upload a PDF, pick a tier (or auto), optionally paste bid assumptions, and download the `.docx` / Markdown / JSON.
+- **Upload** by drag-and-drop, file picker, or **Google Drive** (see below).
+- Pick a tier (or auto), choose the Claude pass, optionally paste bid assumptions, then **Analyze**.
+- **Split-screen review:** the rendered PDF on the left, the findings/commentary on the right, with a **draggable divider** to resize either side and a zoom control.
+- **Click a finding** → it jumps to the page and **highlights the exact clause** in the document. (Scanned/OCR'd pages have no text layer, so it jumps to the page and flashes it.)
+- Filter findings (High / Med / Low / Attorney / AI-found), expand the full written report + phased checklist, and download `.docx` / Markdown / JSON.
+
+The PDF viewer uses the bundled pdf.js **legacy** build served locally, so it works **offline** and on older corporate browsers.
+
+### Google Drive (optional)
+
+The Drive button is gated on a Google Cloud OAuth client. Set two env vars and restart:
+
+```bash
+export GOOGLE_CLIENT_ID=xxxxx.apps.googleusercontent.com
+export GOOGLE_API_KEY=AIza...
+npm run web
+```
+
+Create these in the Google Cloud Console (enable the **Picker API** and **Drive API**, add an OAuth client ID for a Web app with your origin, e.g. `http://localhost:3000`). The browser uses Google's Picker with a `drive.file` scope and downloads the chosen PDF client-side — no Google credentials live on the server. Without the vars, the button shows a "configure to enable" tooltip. (Drive requires internet, so it's not an offline path — use drag-and-drop offline.)
 
 ## Use — as a library
 
