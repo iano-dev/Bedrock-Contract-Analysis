@@ -82,6 +82,9 @@ Connect the GitHub repo in Netlify (or `netlify deploy`), and set site environme
 |---|---|
 | `ANTHROPIC_API_KEY` | Enables the Claude-assisted pass in the analyze function. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_API_KEY` | Enables the in-browser Google Drive picker. |
+| `GOOGLE_CLIENT_ID` + `ALLOWED_EMAIL_DOMAINS` + `SESSION_SECRET` | Enables **Google sign-in** ("Sign in with Google," restricted to the listed email domains). When all three are set, the app shows a sign-in gate and the `/api/analyze` and `/api/deliverable` functions require a valid session. Unset → the app is open (e.g. local dev). |
+
+**Google sign-in details:** the browser gets a Google ID token, a function verifies it against Google and checks the email domain is in `ALLOWED_EMAIL_DOMAINS` (comma-separated, e.g. `bedrock.works,dmidesign.com`), then issues a signed session cookie (`SESSION_SECRET` signs it). `GOOGLE_CLIENT_ID` is a Google Cloud **OAuth Web client** whose authorized JavaScript origin is your site URL — the same client can power the Drive picker.
 
 OCR runs in the visitor's browser (tesseract.js), so it works on the hosted site without any server-side native dependencies.
 

@@ -10,6 +10,14 @@ import { dirname, join } from 'node:path';
 import { runAnalysis } from '../src/engine/run.js';
 import { buildMarkdown, buildDocx } from '../src/deliverables/index.js';
 import { loadCounterparties } from '../src/engine/tiers.js';
+import {
+  authEnabled,
+  verifyGoogleToken,
+  signSession,
+  sessionCookie,
+  clearCookie,
+  userFromCookieHeader,
+} from '../src/auth/session.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -23,12 +31,41 @@ app.get('/api/config', (_req, res) => {
     googleClientId: process.env.GOOGLE_CLIENT_ID || null,
     googleApiKey: process.env.GOOGLE_API_KEY || null,
     llmConfigured: !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN),
+    authEnabled: authEnabled(),
   });
 });
 
+// --- Google sign-in (mirrors netlify/functions/auth.mjs) ---
+const cookieOpts = (req) => ({ secure: req.secure || req.headers['x-forwarded-proto'] === 'https' });
+
+app.get('/api/auth/me', async (req, res) => {
+  const user = await userFromCookieHeader(req.headers.cookie);
+  res.json({ user, authEnabled: authEnabled() });
+});
+app.post('/api/auth/logout', (req, res) => {
+  res.setHeader('Set-Cookie', clearCookie(cookieOpts(req)));
+  res.json({ ok: true });
+});
+app.post('/api/auth/login', async (req, res) => {
+  if (!authEnabled()) return res.status(400).json({ error: 'Google auth is not configured.' });
+  const result = await verifyGoogleToken(req.body?.credential);
+  if (!result.ok) return res.status(403).json({ error: result.reason });
+  const token = await signSession(result.user);
+  res.setHeader('Set-Cookie', sessionCookie(token, cookieOpts(req)));
+  res.json({ user: result.user });
+});
+
+// Reject API calls without a valid session when auth is enabled.
+async function requireAuth(req, res, next) {
+  if (!authEnabled()) return next();
+  const user = await userFromCookieHeader(req.headers.cookie);
+  if (!user) return res.status(401).json({ error: 'Sign in required.' });
+  next();
+}
+
 app.get('/api/counterparties', (_req, res) => res.json(loadCounterparties()));
 
-app.post('/api/analyze', async (req, res) => {
+app.post('/api/analyze', requireAuth, async (req, res) => {
   try {
     if (!req.body?.text || !req.body.text.trim()) {
       return res.status(400).json({ error: 'No contract text supplied (extraction may have failed in the browser).' });
@@ -40,7 +77,7 @@ app.post('/api/analyze', async (req, res) => {
   }
 });
 
-app.post('/api/deliverable', async (req, res) => {
+app.post('/api/deliverable', requireAuth, async (req, res) => {
   const { analysis, format = 'docx' } = req.body || {};
   if (!analysis) return res.status(400).send('Missing analysis');
   const base = (analysis.metadata?.project || analysis.fileName || 'analysis').replace(/[^a-z0-9]+/gi, '-').slice(0, 50);

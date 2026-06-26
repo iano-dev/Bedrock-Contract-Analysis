@@ -31,12 +31,21 @@ try {
   await sleep(800);
   await page.screenshot({ path: `${outDir}/review-overview.png` });
 
-  // Click the first HIGH-severity finding and confirm it highlights in the doc.
+  // Click the first HIGH-severity finding and confirm it highlights in the doc
+  // AND that the highlight lands inside the visible viewport (alignment check).
   const high = page.locator('.comment.s-HIGH').first();
   await high.click();
-  await sleep(1500);
+  await sleep(1800);
   const hlCount = await page.locator('.page .hl').count();
   console.log('highlight rectangles drawn:', hlCount);
+  console.log('page indicator:', await page.locator('#pageind').textContent());
+  if (hlCount > 0) {
+    const hl = await page.locator('.page .hl').first().boundingBox();
+    const pane = await page.locator('#docpane').boundingBox();
+    const hlMid = hl.y + hl.height / 2;
+    const inView = hlMid >= pane.y && hlMid <= pane.y + pane.height;
+    console.log(`highlight midY=${Math.round(hlMid)} vs viewport [${Math.round(pane.y)}, ${Math.round(pane.y + pane.height)}] -> ${inView ? 'ALIGNED' : 'OFF-SCREEN'}`);
+  }
   await page.screenshot({ path: `${outDir}/review-highlight.png` });
 
   // Resize the split by dragging the gutter left, to show it's adjustable.

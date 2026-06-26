@@ -3,9 +3,13 @@
 // POSTs the analysis back; nothing is stored server-side.
 
 import { buildMarkdown, buildDocx } from '../../src/deliverables/index.js';
+import { authEnabled, userFromCookieHeader } from '../../src/auth/session.js';
 
 export default async (req) => {
   if (req.method !== 'POST') return new Response('POST only', { status: 405 });
+  if (authEnabled() && !(await userFromCookieHeader(req.headers.get('cookie')))) {
+    return new Response('Sign in required.', { status: 401 });
+  }
   let body;
   try {
     body = await req.json();

@@ -4,9 +4,13 @@
 // environment to enable the Claude-assisted pass.
 
 import { runAnalysis } from '../../src/engine/run.js';
+import { authEnabled, userFromCookieHeader } from '../../src/auth/session.js';
 
 export default async (req) => {
   if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
+  if (authEnabled() && !(await userFromCookieHeader(req.headers.get('cookie')))) {
+    return json({ error: 'Sign in required.' }, 401);
+  }
   let body;
   try {
     body = await req.json();
