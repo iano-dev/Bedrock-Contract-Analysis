@@ -76,6 +76,20 @@ export async function buildDocx(analysis) {
   }
   kids.push(table(glanceRows));
   kids.push(p([new TextRun({ text: `Incorporated docs to retrieve: ${s.incorporatedDocs}  |  Contested: ${s.contestedItems}  |  Attorney-review items: ${s.attorneyReviewItems}` })]));
+  kids.push(
+    p([
+      new TextRun({
+        text: analysis.llm?.used
+          ? `Analysis engine: rules engine + Claude-assisted pass (${analysis.llm.model}) — ${analysis.llm.addedFlags} additional clause(s) found by Claude.`
+          : `Analysis engine: rules engine only${analysis.llm?.reason ? ` (${analysis.llm.reason})` : ''}.`,
+        italics: true,
+        color: '555555',
+      }),
+    ])
+  );
+  if (analysis.extraction?.ocrUsed) {
+    kids.push(p([new TextRun({ text: `OCR: ${analysis.extraction.ocrPages?.length || 0} scanned page(s) recovered.`, italics: true, color: '555555' })]));
+  }
 
   // Contract facts
   kids.push(h('Contract facts'));
@@ -97,6 +111,7 @@ export async function buildDocx(analysis) {
     const loc = f.locations[0];
     const where = loc ? [loc.article, loc.page ? `p.${loc.page}` : null].filter(Boolean).join(', ') || '—' : '—';
     const titleRuns = [new TextRun({ text: f.title })];
+    if (f.source === 'llm') titleRuns.push(new TextRun({ text: '  [AI-found]', italics: true, color: '0969DA' }));
     if (f.attorneyReview) titleRuns.push(new TextRun({ text: '  [attorney review]', italics: true, color: '6F42C1' }));
     if (analysis.tier === 1 && f.posture !== 'negotiate') titleRuns.push(new TextRun({ text: '  [accept-and-proceed]', italics: true, color: '555555' }));
     trows.push(

@@ -40,6 +40,14 @@ export function buildMarkdown(analysis) {
   L.push(`- **Incorporated documents to retrieve before signing:** ${s.incorporatedDocs}`);
   L.push(`- **Contested positions (verify before asserting):** ${s.contestedItems}`);
   L.push(`- **Attorney-review items:** ${s.attorneyReviewItems}`);
+  if (analysis.llm?.used) {
+    L.push(`- **Analysis engine:** rules engine + Claude-assisted pass (${analysis.llm.model}) — ${analysis.llm.addedFlags} additional clause(s) found by Claude. ${analysis.llm.coverage}`);
+  } else {
+    L.push(`- **Analysis engine:** rules engine only${analysis.llm?.reason ? ` (${analysis.llm.reason})` : ''}.`);
+  }
+  if (analysis.extraction?.ocrUsed) {
+    L.push(`- **OCR:** ${analysis.extraction.ocrPages?.length || 0} scanned page(s) recovered via OCR.`);
+  }
   L.push('');
 
   // ---- Contract facts -----------------------------------------------------
@@ -70,7 +78,11 @@ export function buildMarkdown(analysis) {
     const loc = f.locations[0];
     const where = loc ? [loc.article, loc.page ? `p.${loc.page}` : null].filter(Boolean).join(', ') || '—' : '—';
     const conf = f.confidence === 'contested' ? 'CONTESTED' : 'firm';
-    const tags = [f.attorneyReview ? '⚖️ atty' : null, analysis.tier === 1 && f.posture !== 'negotiate' ? 'accept-and-proceed' : null].filter(Boolean).join('; ');
+    const tags = [
+      f.attorneyReview ? '⚖️ atty' : null,
+      f.source === 'llm' ? '🤖 AI-found' : null,
+      analysis.tier === 1 && f.posture !== 'negotiate' ? 'accept-and-proceed' : null,
+    ].filter(Boolean).join('; ');
     L.push(`| ${sevEmoji[f.severity]} ${f.severity} | ${mdEscape(f.title)}${tags ? ` _(${tags})_` : ''} | ${f.category} | ${conf} | ${where} | ${mdEscape(f.action)} |`);
   }
   L.push('');
@@ -110,7 +122,7 @@ export function buildMarkdown(analysis) {
       L.push('');
       L.push(`**Why it matters to Bedrock:** ${f.why}`);
       L.push('');
-      L.push(`**Severity:** ${f.severity} | **Confidence:** ${f.confidence}${f.attorneyReview ? ' | ⚖️ **Attorney review recommended**' : ''}${analysis.tier === 1 ? ` | **Posture:** ${f.posture}` : ''}`);
+      L.push(`**Severity:** ${f.severity} | **Confidence:** ${f.confidence}${f.source === 'llm' ? ' | 🤖 Claude-found' : ''}${f.attorneyReview ? ' | ⚖️ **Attorney review recommended**' : ''}${analysis.tier === 1 ? ` | **Posture:** ${f.posture}` : ''}`);
       if (f.note) L.push(`> ⚠️ ${f.note}`);
       L.push('');
       L.push(`**Recommended action:** ${f.action}`);

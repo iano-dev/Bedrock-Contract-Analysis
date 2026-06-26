@@ -16,6 +16,30 @@ import { suggestTier, applyTierPosture, loadCounterparties } from './tiers.js';
 import { bidCrossCheck } from './bidCrossCheck.js';
 import { detectFavorable } from './favorable.js';
 
+// Severity counts for a flag list — shared by analyze() and the LLM enrichment.
+export function countSeverities(list) {
+  return {
+    HIGH: list.filter((f) => f.severity === 'HIGH').length,
+    MEDIUM: list.filter((f) => f.severity === 'MEDIUM').length,
+    LOW: list.filter((f) => f.severity === 'LOW').length,
+    total: list.length,
+  };
+}
+
+// Recompute the summary block from the current flag set + incorporated docs.
+export function buildSummary(flags, incorporated) {
+  const negotiate = flags.filter((f) => f.posture === 'negotiate');
+  const acceptProceed = flags.filter((f) => f.posture === 'accept-and-proceed');
+  return {
+    all: countSeverities(flags),
+    negotiate: countSeverities(negotiate),
+    acceptAndProceed: countSeverities(acceptProceed),
+    attorneyReviewItems: flags.filter((f) => f.attorneyReview).length,
+    contestedItems: flags.filter((f) => f.confidence === 'contested').length,
+    incorporatedDocs: incorporated.count,
+  };
+}
+
 // analyze({ text, pages, fileName, tier, bidAssumptions })
 // tier: 1 | 2 | 'auto'  (default 'auto' -> suggest from counterparty, fail to 2)
 export function analyze({ text, pages = [], fileName = null, tier = 'auto', bidAssumptions = {} }) {
@@ -40,15 +64,6 @@ export function analyze({ text, pages = [], fileName = null, tier = 'auto', bidA
 
   // Summary stats — for Tier 1, count negotiate-posture (scope/schedule) vs.
   // accept-and-proceed separately so the picture matches the posture.
-  const negotiate = flags.filter((f) => f.posture === 'negotiate');
-  const acceptProceed = flags.filter((f) => f.posture === 'accept-and-proceed');
-  const counts = (list) => ({
-    HIGH: list.filter((f) => f.severity === 'HIGH').length,
-    MEDIUM: list.filter((f) => f.severity === 'MEDIUM').length,
-    LOW: list.filter((f) => f.severity === 'LOW').length,
-    total: list.length,
-  });
-
   return {
     generatedFor: 'Bedrock Concrete Cutting / Bedrock Commercial Concrete (OR/WA subcontractor)',
     fileName,
@@ -56,14 +71,7 @@ export function analyze({ text, pages = [], fileName = null, tier = 'auto', bidA
     tierSuggestion,
     tierExplicit: tier !== 'auto' && tier != null,
     metadata,
-    summary: {
-      all: counts(flags),
-      negotiate: counts(negotiate),
-      acceptAndProceed: counts(acceptProceed),
-      attorneyReviewItems: flags.filter((f) => f.attorneyReview).length,
-      contestedItems: flags.filter((f) => f.confidence === 'contested').length,
-      incorporatedDocs: incorporated.count,
-    },
+    summary: buildSummary(flags, incorporated),
     flags,
     incorporated,
     crossCheck,

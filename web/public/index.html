@@ -54,6 +54,14 @@
             <option value="2">Tier 2 — full review, flag everything</option>
           </select>
         </div>
+        <div>
+          <label>Claude-assisted pass</label>
+          <select id="llm">
+            <option value="auto">Auto (use Claude if an API key is configured)</option>
+            <option value="on">On — require the Claude pass</option>
+            <option value="off">Off — rules engine only</option>
+          </select>
+        </div>
       </div>
       <label>Bid assumptions (optional JSON — enables bid-vs-schedule cross-check)</label>
       <textarea id="bid" placeholder='{ "basis": "straight-time", "pricedMobilizations": 1, "additionalMobRate": 350, "standbyRate": 150 }'></textarea>
@@ -87,6 +95,7 @@ form.addEventListener('submit', async (e) => {
   const fd = new FormData();
   fd.append('contract', file);
   fd.append('tier', document.getElementById('tier').value);
+  fd.append('llm', document.getElementById('llm').value);
   const bid = document.getElementById('bid').value.trim();
   if (bid) fd.append('bidAssumptions', bid);
 
@@ -123,13 +132,14 @@ function render(data){
       <span class="stat"><b>${s.contestedItems}</b> contested</span>
       <span class="stat"><b>${s.attorneyReviewItems}</b> attorney-review</span>
     </div>
-    <p class="muted">${esc(a.metadata.contractType)}${a.metadata.contractValue ? ' · '+esc(a.metadata.contractValue) : ''}${a.extraction ? ' · '+a.extraction.pageCount+' pages' : ''}</p>
-    ${(a.extraction && a.extraction.warnings && a.extraction.warnings.length) ? '<p class="err">'+a.extraction.warnings.map(esc).join('<br>')+'</p>' : ''}`;
+    <p class="muted">${esc(a.metadata.contractType)}${a.metadata.contractValue ? ' · '+esc(a.metadata.contractValue) : ''}${a.extraction ? ' · '+a.extraction.pageCount+' pages' : ''}${(a.extraction && a.extraction.ocrUsed) ? ' · OCR: '+(a.extraction.ocrPages||[]).length+' scanned page(s)' : ''}</p>
+    <p class="muted">${a.llm && a.llm.used ? '🤖 Rules engine + Claude-assisted pass ('+esc(a.llm.model)+') — '+a.llm.addedFlags+' AI-found clause(s)' : 'Rules engine only'+(a.llm && a.llm.reason ? ' ('+esc(a.llm.reason)+')' : '')}</p>
+    ${(a.extraction && a.extraction.warnings && a.extraction.warnings.length) ? '<p class="muted">'+a.extraction.warnings.map(esc).join('<br>')+'</p>' : ''}`;
 
   const rows = a.flags.map(f=>{
     const loc=f.locations[0]||{};
     const where=[loc.article, loc.page?('p.'+loc.page):null].filter(Boolean).join(', ')||'—';
-    const tags=[f.attorneyReview?'⚖️':'', (a.tier===1&&f.posture!=='negotiate')?'<span class="muted">[accept-and-proceed]</span>':''].join(' ');
+    const tags=[f.attorneyReview?'⚖️':'', f.source==='llm'?'🤖':'', (a.tier===1&&f.posture!=='negotiate')?'<span class="muted">[accept-and-proceed]</span>':''].join(' ');
     return `<tr class="${f.severity}">
       <td><span class="pill ${f.severity}">${f.severity}</span></td>
       <td><b>${esc(f.title)}</b> ${tags}<br><span class="muted">${esc((loc.clauseText||'').slice(0,160))}</span></td>

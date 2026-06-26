@@ -33,10 +33,13 @@ app.post('/api/analyze', upload.single('contract'), async (req, res) => {
     if (req.body.bidAssumptions) {
       try { bidAssumptions = JSON.parse(req.body.bidAssumptions); } catch { /* ignore bad JSON */ }
     }
+    // llm: 'on' -> require, 'off' -> disable, anything else -> auto
+    const llm = req.body.llm === 'on' ? true : req.body.llm === 'off' ? false : 'auto';
     const analysis = await analyzePdfBuffer(req.file.buffer, {
       fileName: req.file.originalname,
       tier,
       bidAssumptions,
+      llm,
     });
     const id = `a${++counter}`;
     cache.set(id, analysis);

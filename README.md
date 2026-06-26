@@ -9,14 +9,15 @@ Internal tool for **Bedrock Concrete Cutting / Bedrock Commercial Concrete** (a 
 ## What it does
 
 1. **Tiered triage first** (the most important decision). Tier 1 = large/blue-chip GCs (Skanska, Turner, Hoffman, …): accept-most posture, review narrows to **scope + schedule**; everything else is surfaced as "accept-and-proceed" awareness. Tier 2 = everyone else: **full review, flag everything.** Unknown counterparties **default to Tier 2** (fail safe). The Tier-1 list is editable in `src/data/counterparties.json`.
-2. **Extracts** contract text from the PDF (with per-page offsets for citations; OCR fallback hook for scanned sets — see caveat below).
+2. **Extracts** contract text from the PDF (with per-page offsets for citations). **Scanned pages are OCR'd automatically and offline** — see OCR below.
 3. **Detects** contract type (AGC sub, PWA/prevailing-wage, …), parties, dates, value, and the scope section.
 4. **Runs the full flagging taxonomy** (Section 4 of the brief) as a checklist pass. Each hit emits: *what the clause says → why it matters to Bedrock → severity → recommended action*, with the clause text and a page/article citation.
 5. **Auto-builds the Incorporated Documents Register** — every named document and CSI MasterFormat section number incorporated by reference, each marked "retrieve and read separately before signing."
 6. **Bid-vs-schedule cross-check** — given priced assumptions, tests whether extended-week/Saturday windows or fragmented mobilizations fall outside what was priced and surfaces the differential as a candidate change order.
-7. **Generates all deliverables simultaneously**: Markdown report, risk-rated table, phased checklist, **Word `.docx`** (color-coded severity), JSON, and two GC-response email postures (softer "reserve and coordinate" / firmer "assert change orders").
+7. **Optional Claude-assisted pass** (see below) — fills in contract facts regex missed and surfaces risk clauses the pattern library didn't catch.
+8. **Generates all deliverables simultaneously**: Markdown report, risk-rated table, phased checklist, **Word `.docx`** (color-coded severity), JSON, and two GC-response email postures (softer "reserve and coordinate" / firmer "assert change orders").
 
-Every flag carries a **confidence label** (`firm` vs. `contested`) and, where appropriate, an **attorney-review** flag.
+Every flag carries a **confidence label** (`firm` vs. `contested`), a **source** (rules engine vs. 🤖 Claude-found), and, where appropriate, an **attorney-review** flag.
 
 ---
 
@@ -34,13 +35,16 @@ Requires Node ≥ 20.
 # Tier auto-suggested from the counterparty, failing to Tier 2
 node src/cli.js path/to/subcontract.pdf
 
-# Force a tier and run the bid-vs-schedule cross-check
+# Force a tier, run the bid-vs-schedule cross-check, and add the Claude pass
 node src/cli.js path/to/subcontract.pdf \
   --tier 2 \
   --basis straight-time \
   --priced-mobs 1 --add-mob-rate 350 --standby-rate 150 \
+  --llm \
   --print
 ```
+
+Key flags: `--tier 1|2|auto`, `--llm` / `--no-llm`, `--ocr auto|off`, `--bid bid.json`, `--out <dir>`, `--print`.
 
 Outputs `*.report.md`, `*.report.docx`, and `*.analysis.json` to `./output/` (override with `--out`). Bid assumptions can also come from a JSON file via `--bid bid.json`:
 
@@ -74,7 +78,7 @@ await generateDeliverables(analysis, { outDir: 'output' });
 npm test
 ```
 
-The suite uses two fixtures drawn from the worked examples in the brief (Cedar Park MS Seismic PWA — Tier 2; a Skanska AGC sub — Tier 1) as regression tests for the flagging logic, tier posture, incorporated register, bid cross-check, and deliverable generation.
+The suite covers the flagging logic, tier posture, incorporated register, bid cross-check, and deliverable generation (fixtures drawn from the worked examples — Cedar Park MS Seismic PWA Tier 2, Skanska AGC Tier 1), plus a real **scanned image-only PDF** that exercises the OCR path end-to-end, and the LLM pass's normalization/dedup and no-key fallback (the live API call is gated behind a key, so those assertions run offline).
 
 ---
 
@@ -95,6 +99,8 @@ The suite uses two fixtures drawn from the worked examples in the brief (Cedar P
 | Clause/pattern library as long-term asset (§6) | `src/data/patterns.js` — add patterns here as new contracts come through |
 | Bid-vs-schedule cross-check (§6) | `src/engine/bidCrossCheck.js` |
 | Preconditions-to-mobilize gate (§6) | `src/deliverables/checklist.js` (PRE-MOBILIZATION phase) |
+| OCR fallback for scanned 200+ page sets (§6) | `src/extract/ocr.js`, `src/extract/pdf.js` |
+| Claude-assisted extraction pass | `src/engine/llm.js` |
 
 ## Growing the pattern library
 
@@ -120,9 +126,35 @@ Add a regression case to `test/analyze.test.js` so the pattern stays covered.
 
 ---
 
-## Scanned-PDF / OCR caveat
+## OCR for scanned PDFs (offline, Windows-friendly)
 
-Text-based PDFs work out of the box. For **scanned** sets the extractor detects low text yield and warns. Full OCR needs both `tesseract.js` (declared as an optional dependency) **and** a PDF-page rasterizer (poppler/graphicsmagick), which is environment-dependent and not wired by default. Until that toolchain is provisioned, either supply a text-based PDF or pre-render pages for OCR. The analysis still runs on whatever text is extracted, with the warning surfaced in the report.
+OCR is wired and runs **fully offline** — important for locked-down Windows desktops.
+
+- The extractor checks **each page** for embedded text. Pages with little or no text layer are treated as scanned and OCR'd individually (a mostly-digital 200-page set with a few scanned exhibits stays fast — only the scanned pages are processed).
+- Pages are rasterized with **`pdfjs-dist` + `@napi-rs/canvas`** (prebuilt binaries — no `node-gyp`, no poppler/graphicsmagick) and read with **`tesseract.js`** (WASM). All three install with prebuilt/portable artifacts on Windows, macOS, and Linux.
+- English language data (`eng.traineddata.gz`) is **bundled** at `src/data/tessdata/`, so OCR needs **no network access**. Point at a different tessdata directory with `BEDROCK_TESSDATA_PATH=C:\path\to\tessdata`.
+- Disable OCR with `--ocr off` (CLI). The report records which pages were OCR-recovered.
+
+If the OCR dependencies are somehow unavailable, the analyzer degrades gracefully: it warns, then runs on whatever embedded text exists.
+
+## Claude-assisted extraction pass (optional)
+
+The rules engine is deterministic and fast but pattern-bound. With an API key configured, a second pass uses **Claude (`claude-opus-4-8`)** to:
+
+- **Extract contract facts** more robustly than regex (parties, value, scope, prevailing wage) — filling only fields the regex left blank.
+- **Find risk clauses the pattern library missed** — paraphrased language, unusual structures, scope buried in prose — returned as structured flags, de-duplicated against the rules-engine findings and tagged **🤖 AI-found** in every deliverable.
+
+Details:
+
+- **Gating:** runs only when `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) is set. Without a key, the tool is the pure rules engine — no behavior change, no errors.
+- **Structured & safe:** uses structured outputs (`messages.parse` + a Zod schema) so the model returns a validated shape. If the pass fails for any reason, the rules-engine result is left intact and the failure is recorded in `analysis.llm`.
+- **Efficient:** the stable Bedrock doctrine/system prompt is **prompt-cached**, so repeated analyses and multi-chunk documents reuse the prefix cheaply. Large documents are chunked; coverage (and any truncation of the LLM pass) is reported — the rules engine always covers the full text.
+- **Controls:** CLI `--llm` (require) / `--no-llm` (disable); default is auto. Web UI has an "Claude-assisted pass" dropdown.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+node src/cli.js subcontract.pdf --tier 2 --llm
+```
 
 ## Notes
 

@@ -18,6 +18,7 @@ import { existsSync } from 'node:fs';
 import { Command } from 'commander';
 import { extractPdf } from './extract/pdf.js';
 import { analyze } from './engine/analyze.js';
+import { enrichAnalysisWithLlm, llmAvailable } from './engine/llm.js';
 import { generateDeliverables } from './deliverables/index.js';
 
 const program = new Command();
@@ -32,6 +33,9 @@ program
   .option('--priced-mobs <n>', 'priced mobilization count', (v) => Number(v))
   .option('--add-mob-rate <n>', '$ per additional mobilization', (v) => Number(v))
   .option('--standby-rate <n>', '$/hr per crew member standby', (v) => Number(v))
+  .option('--llm', 'enable the Claude-assisted extraction pass (requires ANTHROPIC_API_KEY)')
+  .option('--no-llm', 'disable the Claude-assisted extraction pass')
+  .option('--ocr <mode>', 'OCR mode for scanned PDFs: auto | off', 'auto')
   .option('--print', 'print markdown report to stdout')
   .parse();
 
@@ -63,24 +67,43 @@ async function loadBidAssumptions() {
   let text, pages = [];
   const extractionMeta = {};
 
+  const logger = (m) => console.error(`  ${m}`);
+
   if (file.toLowerCase().endsWith('.pdf')) {
-    const extracted = await extractPdf(buffer);
+    const extracted = await extractPdf(buffer, { ocr: opts.ocr, logger });
     text = extracted.text;
     pages = extracted.pages;
     extractionMeta.pageCount = extracted.pageCount;
     extractionMeta.ocrUsed = extracted.ocrUsed;
+    extractionMeta.ocrPages = extracted.ocrPages;
+    extractionMeta.scannedPageCount = extracted.scannedPageCount;
+    extractionMeta.chars = extracted.text.length;
     for (const w of extracted.warnings) console.error(`⚠ ${w}`);
   } else {
     text = buffer.toString('utf8');
   }
 
-  if (!text.trim()) fail('No text extracted. For scanned PDFs, OCR support must be wired (see README).');
+  if (!text.trim()) fail('No text extracted. For scanned PDFs, ensure OCR dependencies are installed (see README).');
 
   const bidAssumptions = await loadBidAssumptions();
   const tier = opts.tier === '1' || opts.tier === '2' ? Number(opts.tier) : 'auto';
 
   const analysis = analyze({ text, pages, fileName: file.split('/').pop(), tier, bidAssumptions });
   if (Object.keys(extractionMeta).length) analysis.extraction = extractionMeta;
+
+  // Claude-assisted extraction pass. --llm forces it; --no-llm disables it;
+  // default (auto) uses it when an API key is present.
+  const wantLlm = opts.llm === true || (opts.llm !== false && llmAvailable());
+  if (opts.llm === true && !llmAvailable()) {
+    console.error('⚠ --llm requested but no ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN set; skipping LLM pass.');
+  }
+  if (wantLlm) {
+    await enrichAnalysisWithLlm(analysis, { text, pages, logger });
+    if (analysis.llm?.used) console.error(`  LLM pass: +${analysis.llm.addedFlags} flag(s), ${analysis.llm.coverage}`);
+    else if (analysis.llm?.error) console.error(`⚠ LLM pass failed: ${analysis.llm.error}`);
+  } else {
+    analysis.llm = { used: false, reason: opts.llm === false ? 'disabled' : 'no API key' };
+  }
 
   const { written, markdown } = await generateDeliverables(analysis, { outDir: opts.out });
 
