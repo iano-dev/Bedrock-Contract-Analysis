@@ -57,6 +57,17 @@ try {
   await sleep(400);
   await page.screenshot({ path: `${outDir}/review-resized.png` });
 
+  // Chat tab: switch, ask a question, confirm a user + bot bubble render.
+  await page.click('#tabs button[data-tab="chat"]');
+  await page.fill('#chatinput', 'What is the retainage percentage?');
+  await page.click('#chatsend');
+  await page.waitForSelector('.cmsg.bot', { timeout: 30000 });
+  await sleep(500);
+  const userMsg = await page.locator('.cmsg.user').count();
+  const botText = await page.locator('.cmsg.bot').last().textContent();
+  console.log(`chat: user bubbles=${userMsg}, bot reply="${(botText || '').slice(0, 80)}"`);
+  await page.screenshot({ path: `${outDir}/review-chat.png` });
+
   console.log('console errors:', errors.length ? errors : 'none');
   console.log('RESULT:', hlCount > 0 ? 'PASS — highlight rendered' : 'WARN — no highlight rects');
 } catch (e) {

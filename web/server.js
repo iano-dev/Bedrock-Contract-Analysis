@@ -8,6 +8,7 @@ import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { runAnalysis } from '../src/engine/run.js';
+import { chatAboutContract, chatAvailable } from '../src/engine/chat.js';
 import { buildMarkdown, buildDocx } from '../src/deliverables/index.js';
 import { loadCounterparties } from '../src/engine/tiers.js';
 import {
@@ -72,6 +73,17 @@ app.post('/api/analyze', requireAuth, async (req, res) => {
     }
     const analysis = await runAnalysis(req.body);
     res.json({ analysis });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/chat', requireAuth, async (req, res) => {
+  try {
+    if (!chatAvailable()) return res.status(400).json({ error: 'Chat needs the Claude API key (set ANTHROPIC_API_KEY).' });
+    if (!req.body?.documentText?.trim()) return res.status(400).json({ error: 'No document loaded.' });
+    if (!Array.isArray(req.body.messages) || !req.body.messages.length) return res.status(400).json({ error: 'No message.' });
+    res.json(await chatAboutContract(req.body));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

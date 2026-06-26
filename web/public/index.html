@@ -54,8 +54,25 @@
   .gutter{flex:0 0 6px;background:var(--line);cursor:col-resize;}
   .gutter:hover{background:var(--accent);}
 
-  .sidepane{flex:1 1 42%;min-width:240px;background:var(--panel);overflow:auto;border-left:1px solid var(--line);}
-  .summary{padding:12px 14px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:3;}
+  .sidepane{flex:1 1 42%;min-width:240px;background:var(--panel);overflow:hidden;border-left:1px solid var(--line);display:flex;flex-direction:column;}
+  .summary{padding:12px 14px;border-bottom:1px solid var(--line);background:var(--panel);flex:0 0 auto;}
+  .tabs{display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid var(--line);flex:0 0 auto;}
+  .tabs button{flex:1;font-size:13px;font-weight:600;border:1px solid var(--line);background:#fff;border-radius:6px;padding:6px;cursor:pointer;}
+  .tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent);}
+  #findingsView{flex:1 1 auto;overflow:auto;}
+  #chatView{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;}
+  .chatmsgs{flex:1 1 auto;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px;}
+  .chatempty{color:#57606a;font-size:12.5px;}
+  .cmsg{max-width:92%;padding:8px 11px;border-radius:10px;font-size:13px;line-height:1.45;white-space:pre-wrap;word-break:break-word;}
+  .cmsg.user{align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:3px;}
+  .cmsg.bot{align-self:flex-start;background:#f0f3f6;border:1px solid var(--line);border-bottom-left-radius:3px;}
+  .cites{margin-top:8px;display:flex;flex-direction:column;gap:5px;}
+  .cite{font-size:11px;background:#fff;border:1px solid var(--line);border-radius:6px;padding:3px 8px;cursor:pointer;color:var(--accent);text-align:left;}
+  .cite:hover{background:#eaf2fe;}
+  .chatbar{flex:0 0 auto;border-top:1px solid var(--line);padding:8px;display:flex;gap:6px;align-items:flex-end;}
+  .chatbar textarea{flex:1;resize:none;min-height:0;}
+  .chatbar button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer;}
+  .chatbar button:disabled{opacity:.5;cursor:default;}
   .summary h2{margin:0 0 4px;font-size:15px;}
   .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;font-size:12px;}
   .chip{background:#f0f3f6;border:1px solid var(--line);border-radius:999px;padding:2px 9px;}
@@ -171,8 +188,23 @@
     <div class="gutter" id="gutter"></div>
     <div class="sidepane" id="sidepane">
       <div class="summary" id="summary"></div>
-      <div class="comments" id="comments"></div>
-      <div class="section-extra" id="extra"></div>
+      <div class="tabs" id="tabs">
+        <button data-tab="findings" class="on">Findings</button>
+        <button data-tab="chat">Ask the contract</button>
+      </div>
+      <div id="findingsView">
+        <div class="comments" id="comments"></div>
+        <div class="section-extra" id="extra"></div>
+      </div>
+      <div id="chatView" style="display:none">
+        <div class="chatmsgs" id="chatmsgs">
+          <div class="chatempty">Ask anything about this contract — e.g. “What’s the retainage and when is it released?”, “Is there a liquidated-damages clause?”, or “Find where indemnification is covered.” Answers cite the contract and you can click a citation to jump to it.</div>
+        </div>
+        <div class="chatbar">
+          <textarea id="chatinput" rows="2" placeholder="Ask about this contract…"></textarea>
+          <button id="chatsend">Ask</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -183,7 +215,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.mjs';
 
 let CONFIG={};
 let chosen={bytes:null,name:null,isPdf:false};
-let state={analysis:null,pdf:null,scale:1.3,rendered:new Map()};
+let state={analysis:null,pdf:null,scale:1.3,rendered:new Map(),docText:'',pages:[],chat:[],chatBusy:false};
 let ocrWorker=null;
 
 const $=(id)=>document.getElementById(id);
@@ -270,6 +302,7 @@ async function analyze(){
     if(res.status===401){ showGate(); throw new Error('Your session expired — please sign in again.'); }
     const data=await res.json();
     if(!res.ok) throw new Error(data.error||'Analysis failed');
+    state.docText=payload.text; state.pages=payload.pages; state.chat=[];
     openReview(data.analysis,chosen.isPdf);
   }catch(err){ setStatus(' <span class="err">'+esc(err.message)+'</span>'); $('analyzeBtn').disabled=false; }
 }
@@ -390,6 +423,52 @@ function renderExtra(a){
   if(a.crossCheck&&a.crossCheck.candidates&&a.crossCheck.candidates.length) h+='<h3>Bid-vs-schedule cross-check</h3><ul>'+a.crossCheck.candidates.map(c=>'<li><b>'+esc(c.title)+'</b> ('+esc(c.confidence)+')'+(c.candidateCO?(' — CO: '+esc(c.candidateCO)):'')+'</li>').join('')+'</ul>';
   h+='<details style="margin-top:8px"><summary>Standing caveats</summary><ul>'+a.caveats.map(c=>'<li>'+esc(c)+'</li>').join('')+'</ul></details>';
   $('extra').innerHTML=h;
+}
+
+// ---------- chat: ask the contract ----------
+$('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{
+  $('tabs').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
+  const chat=b.dataset.tab==='chat';
+  $('chatView').style.display=chat?'flex':'none';
+  $('findingsView').style.display=chat?'none':'block';
+  if(chat) setTimeout(()=>$('chatinput').focus(),0);
+});
+$('chatsend').onclick=sendChat;
+$('chatinput').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); sendChat(); } });
+function addMsg(role,text){
+  const empty=$('chatmsgs').querySelector('.chatempty'); if(empty) empty.remove();
+  const el=document.createElement('div'); el.className='cmsg '+(role==='user'?'user':'bot'); el.textContent=text;
+  $('chatmsgs').appendChild(el); $('chatmsgs').scrollTop=$('chatmsgs').scrollHeight; return el;
+}
+async function sendChat(){
+  const inp=$('chatinput'); const q=inp.value.trim(); if(!q||state.chatBusy) return;
+  inp.value=''; addMsg('user',q); state.chat.push({role:'user',content:q});
+  const bot=addMsg('bot','…'); state.chatBusy=true; $('chatsend').disabled=true;
+  try{
+    const r=await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({documentText:state.docText,fileName:state.analysis.fileName,messages:state.chat})});
+    if(r.status===401){ showGate(); throw new Error('Session expired — sign in again.'); }
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.error||'Chat failed');
+    bot.textContent=d.answer||'(no answer)';
+    if(d.quotes&&d.quotes.length&&state.pdf) renderCites(bot,d.quotes);
+    state.chat.push({role:'assistant',content:d.answer});
+  }catch(e){ bot.textContent='⚠ '+e.message; }
+  finally{ state.chatBusy=false; $('chatsend').disabled=false; $('chatmsgs').scrollTop=$('chatmsgs').scrollHeight; }
+}
+function renderCites(el,quotes){
+  const wrap=document.createElement('div'); wrap.className='cites';
+  quotes.forEach(qt=>{ const b=document.createElement('div'); b.className='cite'; b.textContent='📍 '+qt.slice(0,60)+(qt.length>60?'…':''); b.title=qt; b.onclick=()=>locateQuote(qt); wrap.appendChild(b); });
+  el.appendChild(wrap);
+}
+function locateQuote(quote){
+  if(!state.pdf||!state.docText) return;
+  let page=1;
+  try{
+    const frag=quote.trim().slice(0,60).replace(/[.*+?^${}()|[\]\\]/g,'\\$&').replace(/\s+/g,'\\s+');
+    const m=state.docText.match(new RegExp(frag,'i'));
+    if(m){ const idx=m.index; for(const p of state.pages){ if(idx>=p.start&&idx<=p.end){page=p.page;break;} } }
+  }catch{}
+  locateInDoc(page,quote);
 }
 
 // ---------- viewer ----------
