@@ -8,7 +8,7 @@ import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { analyze } from '../src/engine/analyze.js';
-import { llmQuickEnrich, normalizeLlmFlags, llmAvailable } from '../src/engine/llm.js';
+import { llmQuickEnrich, llmParseBid, normalizeLlmFlags, llmAvailable } from '../src/engine/llm.js';
 import { applyTierPosture } from '../src/engine/tiers.js';
 import { chatAboutContract, chatAvailable } from '../src/engine/chat.js';
 import { buildMarkdown, buildDocx } from '../src/deliverables/index.js';
@@ -97,6 +97,16 @@ app.post('/api/enrich', requireAuth, async (req, res) => {
     let flags = normalizeLlmFlags(rawFlags, { text: req.body.documentText, pages: req.body.pages || [], existingFlags });
     flags = applyTierPosture(flags, Number(req.body.tier) === 1 ? 1 : 2);
     res.json({ flags, facts, truncated });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/parse-bid', requireAuth, async (req, res) => {
+  try {
+    if (!llmAvailable()) return res.json({ assumptions: {}, skipped: 'no-api-key' });
+    if (!req.body?.bidText?.trim()) return res.status(400).json({ error: 'No bid text.' });
+    res.json({ assumptions: await llmParseBid(req.body.bidText) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

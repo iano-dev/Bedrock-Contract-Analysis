@@ -186,6 +186,42 @@ export async function llmQuickEnrich(documentText, { existingFlags = [] } = {}) 
   return { facts: out.facts || null, rawFlags: out.flags || [], truncated };
 }
 
+// Read a bid/estimate document and extract the structured assumptions used by
+// the bid-vs-schedule cross-check, so the user can upload their bid instead of
+// typing the numbers. One small, fast call.
+const BidSchema = z.object({
+  basis: z.enum(['straight-time', 'premium', 'unknown']).describe('Was labor priced at straight time, or did it include premium/overtime?'),
+  pricedMobilizations: z.number().nullable().describe('Number of mobilizations/trips to the site that were priced, or null if not stated'),
+  additionalMobRate: z.number().nullable().describe('Dollars per additional mobilization, or null'),
+  standbyRate: z.number().nullable().describe('Dollars per hour of standby per crew member, or null'),
+  pricedSaturdayWork: z.boolean().nullable().describe('Whether the bid included Saturday/weekend work, or null if unclear'),
+});
+
+export async function llmParseBid(bidText) {
+  const c = client();
+  const doc = (bidText || '').slice(0, 24000);
+  const res = await c.messages.parse({
+    model: MODEL,
+    max_tokens: 800,
+    system: [
+      {
+        type: 'text',
+        text: 'You read a concrete-cutting subcontractor\'s (Bedrock) bid or estimate and extract the pricing assumptions, so they can be compared against the contract schedule to find change orders. Use null for any field the bid does not state. Do not guess.',
+      },
+    ],
+    messages: [{ role: 'user', content: `Extract the bid assumptions from this estimate/bid:\n\n---\n${doc}\n---` }],
+    output_config: { format: zodOutputFormat(BidSchema, 'bid_assumptions'), effort: 'low' },
+  });
+  const out = res.parsed_output || {};
+  const a = {};
+  if (out.basis) a.basis = out.basis;
+  if (typeof out.pricedMobilizations === 'number') a.pricedMobilizations = out.pricedMobilizations;
+  if (typeof out.additionalMobRate === 'number') a.additionalMobRate = out.additionalMobRate;
+  if (typeof out.standbyRate === 'number') a.standbyRate = out.standbyRate;
+  if (typeof out.pricedSaturdayWork === 'boolean') a.pricedSaturdayWork = out.pricedSaturdayWork;
+  return a;
+}
+
 // Convert raw LLM flags into the engine's Flag shape, attaching a page number by
 // locating the quoted clause text in the document, and de-duping against the
 // rules-engine flags by title similarity.
