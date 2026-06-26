@@ -15,11 +15,10 @@
   header .spacer{flex:1;}
   header button{background:#0969da;color:#fff;border:0;padding:7px 12px;border-radius:6px;font-size:13px;cursor:pointer;}
   header button.ghost{background:transparent;border:1px solid #5a6169;}
-  header a.dl{color:#cfe2ff;font-size:13px;margin-left:10px;text-decoration:none;}
+  header .dl{color:#cfe2ff;font-size:13px;margin-left:10px;background:none;border:0;cursor:pointer;}
   .pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:700;color:#fff;}
   .HIGH{background:var(--hi);}.MEDIUM{background:var(--med);}.LOW{background:var(--lo);}
 
-  /* ---------- Upload view ---------- */
   #upload{flex:1;display:flex;align-items:center;justify-content:center;padding:24px;overflow:auto;}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:26px;max-width:640px;width:100%;box-shadow:0 1px 3px rgba(0,0,0,.06);}
   #drop{border:2px dashed #b6c0cc;border-radius:12px;padding:40px 20px;text-align:center;color:#57606a;transition:.15s;cursor:pointer;}
@@ -34,12 +33,10 @@
   .btn{background:var(--accent);color:#fff;border:0;padding:10px 18px;border-radius:6px;font-size:15px;cursor:pointer;}
   .btn:disabled{opacity:.5;cursor:default;}
   .btn.alt{background:#fff;color:var(--ink);border:1px solid var(--line);}
-  .btn.alt[disabled]{opacity:.55;}
   .muted{color:#57606a;font-size:12px;}
   .err{color:var(--hi);font-weight:600;}
   #fileChosen{font-size:13px;margin-top:10px;}
 
-  /* ---------- Review view ---------- */
   #review{flex:1;display:none;min-height:0;}
   .reviewer{display:flex;height:100%;min-height:0;}
   .docpane{flex:1 1 58%;min-width:120px;background:#5b626b;overflow:auto;position:relative;}
@@ -76,7 +73,6 @@
   .comment .loc{font-size:11px;color:var(--accent);font-weight:600;white-space:nowrap;}
   .comment .why{font-size:12.5px;color:#3a414a;margin-top:6px;}
   .comment .action{font-size:12.5px;margin-top:6px;}
-  .comment .action b{color:#000;}
   .tag{font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;}
   .tag.atty{background:#efe6fb;color:#6f42c1;}
   .tag.ai{background:#e3effd;color:#0969da;}
@@ -100,7 +96,6 @@
   <button id="newBtn" class="ghost" style="display:none">New analysis</button>
 </header>
 
-<!-- ===================== UPLOAD VIEW ===================== -->
 <div id="upload">
   <div class="card">
     <div id="drop">
@@ -109,12 +104,10 @@
       <div id="fileChosen"></div>
     </div>
     <input type="file" id="file" accept="application/pdf,.pdf,.txt" hidden />
-
     <div class="row2">
       <button type="button" class="btn alt" id="browseBtn">Choose file</button>
       <button type="button" class="btn alt" id="driveBtn" disabled title="Set GOOGLE_CLIENT_ID and GOOGLE_API_KEY to enable">Google Drive</button>
     </div>
-
     <div class="opts">
       <div>
         <label>Counterparty tier</label>
@@ -133,9 +126,13 @@
         </select>
       </div>
     </div>
+    <div>
+      <label style="display:flex;align-items:center;gap:8px;font-weight:500">
+        <input type="checkbox" id="ocr" checked style="width:auto"> OCR scanned pages in the browser (slower)
+      </label>
+    </div>
     <label>Bid assumptions (optional JSON — enables bid-vs-schedule cross-check)</label>
     <textarea id="bid" placeholder='{ "basis": "straight-time", "pricedMobilizations": 1, "additionalMobRate": 350, "standbyRate": 150 }'></textarea>
-
     <div class="row2">
       <button class="btn" id="analyzeBtn" disabled>Analyze</button>
       <span id="status" class="muted"></span>
@@ -143,14 +140,12 @@
   </div>
 </div>
 
-<!-- ===================== REVIEW VIEW ===================== -->
 <div id="review">
   <div class="reviewer">
     <div class="docpane" id="docpane">
       <div class="doctools">
-        <span id="docname"></span>
-        <span style="flex:1"></span>
-        <button id="zoomOut">–</button><span id="zoomLbl">100%</span><button id="zoomIn">+</button>
+        <span id="docname"></span><span style="flex:1"></span>
+        <button id="zoomOut">–</button><span id="zoomLbl">130%</span><button id="zoomIn">+</button>
       </div>
       <div class="pages" id="pages"></div>
     </div>
@@ -167,63 +162,136 @@
 import * as pdfjsLib from '/vendor/pdfjs/pdf.min.mjs';
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.mjs';
 
-let CONFIG = {};
-let chosenFile = null;
-let state = { id:null, analysis:null, pdf:null, scale:1.3, rendered:new Map(), filter:'ALL', selected:null };
+let CONFIG={};
+let chosen={bytes:null,name:null,isPdf:false};
+let state={analysis:null,pdf:null,scale:1.3,rendered:new Map()};
+let ocrWorker=null;
 
-const $ = (id)=>document.getElementById(id);
+const $=(id)=>document.getElementById(id);
 const esc=(s)=>(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const setStatus=(h)=>{$('status').innerHTML=h;};
 
-// ---------- config + Drive ----------
-fetch('/api/config').then(r=>r.json()).then(c=>{ CONFIG=c; if(c.googleClientId&&c.googleApiKey) enableDrive(); });
+fetch('/api/config').then(r=>r.json()).then(c=>{CONFIG=c; if(c.googleClientId&&c.googleApiKey) enableDrive();});
 
-// ---------- upload interactions ----------
-const drop=$('drop'), fileInput=$('file');
+// ---------- upload ----------
+const drop=$('drop'),fileInput=$('file');
 $('browseBtn').onclick=()=>fileInput.click();
 drop.onclick=()=>fileInput.click();
 ['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('drag');}));
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('drag');}));
-drop.addEventListener('drop',e=>{ if(e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); });
-fileInput.onchange=()=>{ if(fileInput.files[0]) setFile(fileInput.files[0]); };
+drop.addEventListener('drop',e=>{if(e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);});
+fileInput.onchange=()=>{if(fileInput.files[0]) setFile(fileInput.files[0]);};
+$('newBtn').onclick=()=>location.reload();
 
-function setFile(f){ chosenFile=f; $('fileChosen').innerHTML='Selected: <b>'+esc(f.name)+'</b> ('+Math.round(f.size/1024)+' KB)'; $('analyzeBtn').disabled=false; }
+async function setFile(f){
+  const bytes=await f.arrayBuffer();
+  chosen={bytes,name:f.name,isPdf:/pdf/i.test(f.type)||/\.pdf$/i.test(f.name)};
+  $('fileChosen').innerHTML='Selected: <b>'+esc(f.name)+'</b> ('+Math.round(f.size/1024)+' KB)';
+  $('analyzeBtn').disabled=false;
+}
 
 $('analyzeBtn').onclick=analyze;
-$('newBtn').onclick=()=>{ location.reload(); };
 
 async function analyze(){
-  if(!chosenFile) return;
-  const fd=new FormData();
-  fd.append('contract',chosenFile);
-  fd.append('tier',$('tier').value);
-  fd.append('llm',$('llm').value);
-  const bid=$('bid').value.trim(); if(bid) fd.append('bidAssumptions',bid);
-  $('analyzeBtn').disabled=true; $('status').innerHTML=' Analyzing… (OCR + analysis can take a moment)';
+  if(!chosen.bytes) return;
+  $('analyzeBtn').disabled=true;
   try{
-    const res=await fetch('/api/analyze',{method:'POST',body:fd});
+    let payload;
+    if(chosen.isPdf){
+      setStatus(' Reading PDF…');
+      payload=await extractClient(chosen.bytes,{ocr:$('ocr').checked});
+    } else {
+      payload={text:new TextDecoder().decode(chosen.bytes),pages:[],pageCount:0,ocrPages:[],scannedPageCount:0,ocrUsed:false};
+      state.pdf=null;
+    }
+    if(!payload.text.trim()) throw new Error('No text could be extracted from this file.');
+    setStatus(' Analyzing…');
+    const bid=$('bid').value.trim();
+    const body={
+      text:payload.text, pages:payload.pages, fileName:chosen.name,
+      tier:$('tier').value==='auto'?'auto':Number($('tier').value),
+      llm:$('llm').value==='on'?true:$('llm').value==='off'?false:'auto',
+      bidAssumptions: bid?safeJson(bid):{},
+      extraction:{pageCount:payload.pageCount,ocrUsed:payload.ocrUsed,ocrPages:payload.ocrPages,scannedPageCount:payload.scannedPageCount,chars:payload.text.length},
+    };
+    const res=await fetch('/api/analyze',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
     const data=await res.json();
     if(!res.ok) throw new Error(data.error||'Analysis failed');
-    openReview(data);
-  }catch(err){ $('status').innerHTML=' <span class="err">'+esc(err.message)+'</span>'; $('analyzeBtn').disabled=false; }
+    openReview(data.analysis,chosen.isPdf);
+  }catch(err){ setStatus(' <span class="err">'+esc(err.message)+'</span>'); $('analyzeBtn').disabled=false; }
+}
+function safeJson(s){try{return JSON.parse(s);}catch{return {};}}
+
+// ---------- client-side extraction + OCR ----------
+async function extractClient(bytes,{ocr}){
+  const pdf=await pdfjsLib.getDocument({data:new Uint8Array(bytes)}).promise;
+  state.pdf=pdf;
+  const pageTexts=[];
+  for(let n=1;n<=pdf.numPages;n++){
+    setStatus(` Extracting text… page ${n}/${pdf.numPages}`);
+    const page=await pdf.getPage(n);
+    const tc=await page.getTextContent();
+    pageTexts.push(tc.items.map(i=>i.str).join(' '));
+  }
+  const scanned=[]; pageTexts.forEach((t,i)=>{ if((t||'').replace(/\s/g,'').length<100) scanned.push(i+1); });
+  const ocrPages=[];
+  if(ocr && scanned.length){
+    try{
+      const worker=await getOcrWorker();
+      for(let k=0;k<scanned.length;k++){
+        const p=scanned[k];
+        setStatus(` OCR scanned page ${k+1}/${scanned.length} (page ${p})…`);
+        const page=await pdf.getPage(p);
+        const vp=page.getViewport({scale:2});
+        const c=document.createElement('canvas'); c.width=Math.ceil(vp.width); c.height=Math.ceil(vp.height);
+        await page.render({canvasContext:c.getContext('2d'),viewport:vp}).promise;
+        const {data}=await worker.recognize(c);
+        if(data.text && data.text.replace(/\s/g,'').length){ pageTexts[p-1]=data.text; ocrPages.push(p); }
+      }
+    }catch(e){ console.error('OCR error:',e&&e.stack||e); setStatus(' <span class="err">OCR unavailable: '+esc(e.message||e)+'</span> — analyzing embedded text only.'); }
+  }
+  const SEP='\n\n'; let text=''; const pages=[];
+  pageTexts.forEach((t,i)=>{const start=text.length;text+=t;pages.push({page:i+1,start,end:text.length});if(i<pageTexts.length-1)text+=SEP;});
+  return {text,pages,pageCount:pdf.numPages,ocrPages,scannedPageCount:scanned.length,ocrUsed:ocrPages.length>0};
 }
 
-// ---------- review view ----------
-async function openReview(data){
-  state.id=data.id; state.analysis=data.analysis;
+async function getOcrWorker(){
+  if(ocrWorker) return ocrWorker;
+  const Tesseract=(await import('/vendor/tesseract/tesseract.esm.min.js')).default;
+  ocrWorker=await Tesseract.createWorker('eng',1,{
+    workerPath:'/vendor/tesseract/worker.min.js',
+    corePath:'/vendor/tesseract/',
+    langPath:'/vendor/tessdata',
+    workerBlobURL:false,
+    logger:m=>{ if(m.status&&m.status.includes('recogniz')) setStatus(` OCR: ${Math.round((m.progress||0)*100)}%`); },
+  });
+  return ocrWorker;
+}
+
+// ---------- review ----------
+function openReview(a,viewable){
+  state.analysis=a;
   $('upload').style.display='none'; $('review').style.display='block'; $('newBtn').style.display='inline-block';
-  const a=data.analysis;
   $('hdrsub').textContent=(a.metadata.project||a.fileName||'')+' · Tier '+a.tier;
-  $('hdrdl').innerHTML=`<a class="dl" href="/api/download/${data.id}.docx">⬇ Word</a><a class="dl" href="/api/download/${data.id}.md">⬇ Markdown</a><a class="dl" href="/api/download/${data.id}.json">⬇ JSON</a>`;
+  $('hdrdl').innerHTML=`<button class="dl" data-f="docx">⬇ Word</button><button class="dl" data-f="md">⬇ Markdown</button><button class="dl" data-f="json">⬇ JSON</button>`;
+  $('hdrdl').querySelectorAll('button').forEach(b=>b.onclick=()=>download(b.dataset.f));
   $('docname').textContent=esc(a.fileName||'document');
-  renderSummary(a); renderComments(a); renderExtra(a,data.markdown);
-
-  if(data.viewable){ try{ await loadPdf(data.id); }catch(e){ $('pages').innerHTML='<p style="color:#fff;padding:20px">Could not render PDF: '+esc(e.message)+'</p>'; } }
-  else { $('pages').innerHTML='<p style="color:#fff;padding:20px">Document preview is available for PDF uploads. Findings are shown on the right.</p>'; }
+  renderSummary(a); renderComments(a); renderExtra(a);
+  if(viewable && state.pdf) renderViewer().catch(e=>{$('pages').innerHTML='<p style="color:#fff;padding:20px">Could not render PDF: '+esc(e.message)+'</p>';});
+  else $('pages').innerHTML='<p style="color:#fff;padding:20px">Document preview is available for PDF uploads. Findings are shown on the right.</p>';
 }
 
-function counts(a){ return a.tier===1 ? a.summary.negotiate : a.summary.all; }
+async function download(format){
+  const res=await fetch('/api/deliverable',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({analysis:state.analysis,format})});
+  const blob=await res.blob();
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  const base=(state.analysis.metadata.project||state.analysis.fileName||'analysis').replace(/[^a-z0-9]+/gi,'-').slice(0,50);
+  a.download=base+'.'+format; document.body.appendChild(a); a.click(); a.remove();
+}
+
+function counts(a){return a.tier===1?a.summary.negotiate:a.summary.all;}
 function renderSummary(a){
-  const c=counts(a), s=a.summary, x=a.extraction||{};
+  const c=counts(a),s=a.summary,x=a.extraction||{};
   $('summary').innerHTML=`
     <h2>${esc(a.metadata.project||a.fileName||'Analysis')}</h2>
     <div class="muted">Tier ${a.tier} — ${esc(a.tierSuggestion.reason)}</div>
@@ -239,216 +307,121 @@ function renderSummary(a){
     </div>
     <div class="filters" id="filters">
       <button data-f="ALL" class="on">All (${a.flags.length})</button>
-      <button data-f="HIGH">High</button>
-      <button data-f="MEDIUM">Med</button>
-      <button data-f="LOW">Low</button>
-      <button data-f="ATTY">⚖️ Attorney</button>
-      <button data-f="AI">🤖 AI-found</button>
+      <button data-f="HIGH">High</button><button data-f="MEDIUM">Med</button><button data-f="LOW">Low</button>
+      <button data-f="ATTY">⚖️ Attorney</button><button data-f="AI">🤖 AI-found</button>
     </div>`;
-  $('filters').querySelectorAll('button').forEach(b=>b.onclick=()=>{
-    state.filter=b.dataset.f;
-    $('filters').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
-    renderComments(a);
-  });
+  $('filters').querySelectorAll('button').forEach(b=>b.onclick=()=>{state.filter=b.dataset.f;$('filters').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));renderComments(a);});
 }
-
-function passesFilter(f){
-  switch(state.filter){
-    case 'HIGH': case 'MEDIUM': case 'LOW': return f.severity===state.filter;
-    case 'ATTY': return f.attorneyReview;
-    case 'AI': return f.source==='llm';
-    default: return true;
-  }
-}
-
+function passesFilter(f){switch(state.filter){case 'HIGH':case 'MEDIUM':case 'LOW':return f.severity===state.filter;case 'ATTY':return f.attorneyReview;case 'AI':return f.source==='llm';default:return true;}}
 function renderComments(a){
   const box=$('comments'); box.innerHTML='';
   const list=a.flags.filter(passesFilter);
-  if(!list.length){ box.innerHTML='<p class="muted">No findings match this filter.</p>'; return; }
-  list.forEach((f,i)=>{
+  if(!list.length){box.innerHTML='<p class="muted">No findings match this filter.</p>';return;}
+  list.forEach(f=>{
     const loc=f.locations[0]||{};
-    const where=[loc.article, loc.page?('p.'+loc.page):null].filter(Boolean).join(' · ')||'—';
-    const tags=[
-      f.confidence==='contested'?'<span class="tag contested">CONTESTED</span>':'',
-      f.attorneyReview?'<span class="tag atty">⚖️ atty</span>':'',
-      f.source==='llm'?'<span class="tag ai">🤖 AI</span>':'',
-      (a.tier===1&&f.posture!=='negotiate')?'<span class="tag accept">accept-and-proceed</span>':''
-    ].join(' ');
-    const el=document.createElement('div');
-    el.className='comment s-'+f.severity;
-    el.dataset.idx=i;
-    el.innerHTML=`
-      <div class="top"><span class="pill ${f.severity}">${f.severity}</span><span class="title">${esc(f.title)}</span><span class="loc">${esc(where)}</span></div>
-      <div>${tags}</div>
-      ${loc.clauseText?`<div class="quote">“${esc(loc.clauseText)}”</div>`:''}
-      <div class="why">${esc(f.why)}</div>
-      <div class="action"><b>Action:</b> ${esc(f.action)}</div>`;
-    el.onclick=()=>{ selectComment(el, f); };
+    const where=[loc.article,loc.page?('p.'+loc.page):null].filter(Boolean).join(' · ')||'—';
+    const tags=[f.confidence==='contested'?'<span class="tag contested">CONTESTED</span>':'',f.attorneyReview?'<span class="tag atty">⚖️ atty</span>':'',f.source==='llm'?'<span class="tag ai">🤖 AI</span>':'',(a.tier===1&&f.posture!=='negotiate')?'<span class="tag accept">accept-and-proceed</span>':''].join(' ');
+    const el=document.createElement('div'); el.className='comment s-'+f.severity;
+    el.innerHTML=`<div class="top"><span class="pill ${f.severity}">${f.severity}</span><span class="title">${esc(f.title)}</span><span class="loc">${esc(where)}</span></div>
+      <div>${tags}</div>${loc.clauseText?`<div class="quote">“${esc(loc.clauseText)}”</div>`:''}
+      <div class="why">${esc(f.why)}</div><div class="action"><b>Action:</b> ${esc(f.action)}</div>`;
+    el.onclick=()=>{document.querySelectorAll('.comment.sel').forEach(c=>c.classList.remove('sel'));el.classList.add('sel');if(loc.page)locateInDoc(loc.page,loc.quote||loc.clauseText||'');};
     box.appendChild(el);
   });
 }
-
-function selectComment(el, f){
-  document.querySelectorAll('.comment.sel').forEach(c=>c.classList.remove('sel'));
-  el.classList.add('sel');
-  const loc=f.locations[0];
-  if(loc && loc.page) locateInDoc(loc.page, loc.quote||loc.clauseText||'');
-}
-
-function renderExtra(a, markdown){
+function renderExtra(a){
   let h='';
-  if(a.incorporated && a.incorporated.count){
-    h+='<h3>Incorporated documents — retrieve before signing</h3><ul>'+
-      a.incorporated.entries.map(e=>'<li>'+esc(e.name)+(e.topicHint?(' — '+esc(e.topicHint)):'')+(e.page?(' (p.'+e.page+')'):'')+'</li>').join('')+'</ul>';
-  }
-  if(a.favorable && a.favorable.length){
-    h+='<h3>Favorable &amp; protective terms</h3><ul>'+a.favorable.map(x=>'<li>✅ '+esc(x.label)+'</li>').join('')+'</ul>';
-  }
-  if(a.crossCheck && a.crossCheck.candidates && a.crossCheck.candidates.length){
-    h+='<h3>Bid-vs-schedule cross-check</h3><ul>'+a.crossCheck.candidates.map(c=>'<li><b>'+esc(c.title)+'</b> ('+esc(c.confidence)+')'+(c.candidateCO?(' — CO: '+esc(c.candidateCO)):'')+'</li>').join('')+'</ul>';
-  }
-  h+='<details style="margin-top:8px"><summary>Full written report &amp; phased checklist</summary><pre>'+esc(markdown)+'</pre></details>';
+  if(a.incorporated&&a.incorporated.count) h+='<h3>Incorporated documents — retrieve before signing</h3><ul>'+a.incorporated.entries.map(e=>'<li>'+esc(e.name)+(e.topicHint?(' — '+esc(e.topicHint)):'')+(e.page?(' (p.'+e.page+')'):'')+'</li>').join('')+'</ul>';
+  if(a.favorable&&a.favorable.length) h+='<h3>Favorable &amp; protective terms</h3><ul>'+a.favorable.map(x=>'<li>✅ '+esc(x.label)+'</li>').join('')+'</ul>';
+  if(a.crossCheck&&a.crossCheck.candidates&&a.crossCheck.candidates.length) h+='<h3>Bid-vs-schedule cross-check</h3><ul>'+a.crossCheck.candidates.map(c=>'<li><b>'+esc(c.title)+'</b> ('+esc(c.confidence)+')'+(c.candidateCO?(' — CO: '+esc(c.candidateCO)):'')+'</li>').join('')+'</ul>';
   h+='<details style="margin-top:8px"><summary>Standing caveats</summary><ul>'+a.caveats.map(c=>'<li>'+esc(c)+'</li>').join('')+'</ul></details>';
   $('extra').innerHTML=h;
 }
 
-// ---------- PDF rendering + locate/highlight ----------
-async function loadPdf(id){
-  state.pdf=await pdfjsLib.getDocument({url:'/api/file/'+id}).promise;
-  const pagesEl=$('pages'); pagesEl.innerHTML='';
-  state.rendered.clear();
-  for(let n=1;n<=state.pdf.numPages;n++){
-    const div=document.createElement('div'); div.className='page'; div.dataset.page=n;
-    div.innerHTML='<div class="pagenum">'+n+'</div>';
-    pagesEl.appendChild(div);
-  }
-  // Lazy-render pages as they approach the viewport.
-  const io=new IntersectionObserver((entries)=>{
-    entries.forEach(en=>{ if(en.isIntersecting) renderPage(Number(en.target.dataset.page)); });
-  },{root:$('docpane'),rootMargin:'600px'});
+// ---------- viewer ----------
+async function renderViewer(){
+  const pagesEl=$('pages'); pagesEl.innerHTML=''; state.rendered.clear();
+  for(let n=1;n<=state.pdf.numPages;n++){const d=document.createElement('div');d.className='page';d.dataset.page=n;d.innerHTML='<div class="pagenum">'+n+'</div>';pagesEl.appendChild(d);}
+  const io=new IntersectionObserver(es=>es.forEach(en=>{if(en.isIntersecting)renderPage(Number(en.target.dataset.page));}),{root:$('docpane'),rootMargin:'600px'});
   pagesEl.querySelectorAll('.page').forEach(p=>io.observe(p));
   $('zoomIn').onclick=()=>setZoom(state.scale+0.2);
   $('zoomOut').onclick=()=>setZoom(Math.max(0.5,state.scale-0.2));
 }
-
 async function renderPage(n){
   if(state.rendered.has(n)) return state.rendered.get(n);
   const div=$('pages').querySelector(`.page[data-page="${n}"]`);
   const page=await state.pdf.getPage(n);
   const viewport=page.getViewport({scale:state.scale});
-  const canvas=document.createElement('canvas');
-  canvas.width=Math.ceil(viewport.width); canvas.height=Math.ceil(viewport.height);
+  const canvas=document.createElement('canvas'); canvas.width=Math.ceil(viewport.width); canvas.height=Math.ceil(viewport.height);
   div.style.width=canvas.width+'px'; div.style.height=canvas.height+'px';
   const overlay=document.createElement('div'); overlay.className='overlay';
   div.appendChild(canvas); div.appendChild(overlay);
   await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
   const textContent=await page.getTextContent();
-  const info={page,viewport,overlay,textContent,div};
-  state.rendered.set(n,info);
-  return info;
+  const info={page,viewport,overlay,textContent,div}; state.rendered.set(n,info); return info;
 }
-
 function setZoom(s){
   state.scale=s; $('zoomLbl').textContent=Math.round(s*100)+'%';
-  const open=[...state.rendered.keys()];
-  state.rendered.clear();
-  $('pages').querySelectorAll('.page').forEach(p=>{ p.querySelector('canvas')?.remove(); p.querySelector('.overlay')?.remove(); });
+  const open=[...state.rendered.keys()]; state.rendered.clear();
+  $('pages').querySelectorAll('.page').forEach(p=>{p.querySelector('canvas')?.remove();p.querySelector('.overlay')?.remove();});
   open.forEach(n=>renderPage(n));
 }
-
-async function locateInDoc(pageNum, quote){
+async function locateInDoc(pageNum,quote){
   const info=await renderPage(pageNum);
   info.div.scrollIntoView({behavior:'smooth',block:'start'});
-  const rects=findRects(info, quote);
-  // clear old highlights
   $('pages').querySelectorAll('.hl').forEach(h=>h.remove());
-  if(!rects.length){ info.div.classList.remove('flash'); void info.div.offsetWidth; info.div.classList.add('flash'); return; }
-  rects.forEach(r=>{ const d=document.createElement('div'); d.className='hl'; d.style.left=r.x+'px'; d.style.top=r.y+'px'; d.style.width=r.w+'px'; d.style.height=r.h+'px'; info.overlay.appendChild(d); });
-  // scroll the first highlight into comfortable view
-  const first=rects[0];
-  const target=info.div.offsetTop+first.y-120;
-  $('docpane').scrollTo({top:target,behavior:'smooth'});
+  const rects=findRects(info,quote);
+  if(!rects.length){info.div.classList.remove('flash');void info.div.offsetWidth;info.div.classList.add('flash');return;}
+  rects.forEach(r=>{const d=document.createElement('div');d.className='hl';d.style.left=r.x+'px';d.style.top=r.y+'px';d.style.width=r.w+'px';d.style.height=r.h+'px';info.overlay.appendChild(d);});
+  $('docpane').scrollTo({top:info.div.offsetTop+rects[0].y-120,behavior:'smooth'});
 }
-
-// Find bounding boxes for `quote` within a page's text items.
-function findRects(info, quote){
+function findRects(info,quote){
   if(!quote) return [];
-  const items=info.textContent.items.filter(it=>it.str && it.str.trim());
+  const items=info.textContent.items.filter(it=>it.str&&it.str.trim());
   if(!items.length) return [];
-  // Build a normalized concatenated string with per-item ranges.
   let norm=''; const ranges=[];
-  items.forEach((it)=>{
-    const s=it.str.replace(/\s+/g,' ');
-    if(norm && !norm.endsWith(' ')) norm+=' ';
-    const start=norm.length; norm+=s; ranges.push({start,end:norm.length,it});
-  });
-  const hay=norm.toLowerCase();
-  const q=quote.toLowerCase().replace(/\s+/g,' ').trim();
-  let qi=-1, used=q;
-  for(const len of [q.length, 80, 50, 30, 18]){
-    used=q.slice(0,len); qi=hay.indexOf(used); if(qi>=0) break;
-  }
+  items.forEach(it=>{const s=it.str.replace(/\s+/g,' ');if(norm&&!norm.endsWith(' '))norm+=' ';const start=norm.length;norm+=s;ranges.push({start,end:norm.length,it});});
+  const hay=norm.toLowerCase(), q=quote.toLowerCase().replace(/\s+/g,' ').trim();
+  let qi=-1,used=q;
+  for(const len of [q.length,80,50,30,18]){used=q.slice(0,len);qi=hay.indexOf(used);if(qi>=0)break;}
   if(qi<0) return [];
-  const qs=qi, qe=qi+used.length;
-  const hit=ranges.filter(r=>r.end>qs && r.start<qe);
-  return hit.map(r=>rectFor(r.it, info.viewport));
+  const qs=qi,qe=qi+used.length;
+  return ranges.filter(r=>r.end>qs&&r.start<qe).map(r=>rectFor(r.it,info.viewport));
 }
-
-function rectFor(it, viewport){
-  const t=pdfjsLib.Util.transform(viewport.transform, it.transform);
-  const x=t[4], yBaseline=t[5];
-  const h=Math.hypot(t[2],t[3]) || (it.height*viewport.scale) || 12;
-  const w=(it.width*viewport.scale) || (it.str.length*h*0.5);
-  return {x, y:yBaseline-h, w, h:h*1.15};
+function rectFor(it,viewport){
+  const t=pdfjsLib.Util.transform(viewport.transform,it.transform);
+  const h=Math.hypot(t[2],t[3])||(it.height*viewport.scale)||12;
+  const w=(it.width*viewport.scale)||(it.str.length*h*0.5);
+  return {x:t[4],y:t[5]-h,w,h:h*1.15};
 }
 
 // ---------- resizable split ----------
 (function(){
-  const gutter=$('gutter'), docpane=$('docpane'), reviewer=()=>document.querySelector('.reviewer');
+  const gutter=$('gutter'),docpane=$('docpane'),reviewer=()=>document.querySelector('.reviewer');
   let dragging=false;
-  gutter.addEventListener('mousedown',e=>{ dragging=true; e.preventDefault(); document.body.style.cursor='col-resize'; });
-  window.addEventListener('mouseup',()=>{ dragging=false; document.body.style.cursor=''; });
-  window.addEventListener('mousemove',e=>{
-    if(!dragging) return;
-    const r=reviewer().getBoundingClientRect();
-    let left=e.clientX-r.left;
-    left=Math.max(140, Math.min(r.width-260, left));
-    docpane.style.flex='0 0 '+left+'px';
-  });
+  gutter.addEventListener('mousedown',e=>{dragging=true;e.preventDefault();document.body.style.cursor='col-resize';});
+  window.addEventListener('mouseup',()=>{dragging=false;document.body.style.cursor='';});
+  window.addEventListener('mousemove',e=>{if(!dragging)return;const r=reviewer().getBoundingClientRect();let left=Math.max(140,Math.min(r.width-260,e.clientX-r.left));docpane.style.flex='0 0 '+left+'px';});
 })();
 
-// ---------- Google Drive (gated) ----------
+// ---------- Google Drive ----------
 function enableDrive(){
   const btn=$('driveBtn'); btn.title='Pick a file from Google Drive';
-  // Load Google Identity Services + Picker.
-  let pickerReady=false, tokenClient=null, accessToken=null;
+  let pickerReady=false,tokenClient=null,accessToken=null;
   const load=(src)=>new Promise((ok,bad)=>{const s=document.createElement('script');s.src=src;s.onload=ok;s.onerror=bad;document.head.appendChild(s);});
-  Promise.all([load('https://accounts.google.com/gsi/client'), load('https://apis.google.com/js/api.js')]).then(()=>{
-    gapi.load('picker',()=>{pickerReady=true; btn.disabled=false;});
-    tokenClient=google.accounts.oauth2.initTokenClient({
-      client_id:CONFIG.googleClientId,
-      scope:'https://www.googleapis.com/auth/drive.file',
-      callback:(resp)=>{ accessToken=resp.access_token; showPicker(); }
-    });
-  }).catch(()=>{ btn.title='Could not load Google APIs (offline?)'; });
-
+  Promise.all([load('https://accounts.google.com/gsi/client'),load('https://apis.google.com/js/api.js')]).then(()=>{
+    gapi.load('picker',()=>{pickerReady=true;btn.disabled=false;});
+    tokenClient=google.accounts.oauth2.initTokenClient({client_id:CONFIG.googleClientId,scope:'https://www.googleapis.com/auth/drive.file',callback:r=>{accessToken=r.access_token;showPicker();}});
+  }).catch(()=>{btn.title='Could not load Google APIs (offline?)';});
   btn.disabled=false;
-  btn.onclick=()=>{ if(!pickerReady) return; if(accessToken) showPicker(); else tokenClient.requestAccessToken(); };
-
+  btn.onclick=()=>{if(!pickerReady)return;if(accessToken)showPicker();else tokenClient.requestAccessToken();};
   function showPicker(){
     const view=new google.picker.DocsView(google.picker.ViewId.DOCS).setMimeTypes('application/pdf');
-    const picker=new google.picker.PickerBuilder()
-      .addView(view).setOAuthToken(accessToken).setDeveloperKey(CONFIG.googleApiKey)
-      .setCallback(async (d)=>{
-        if(d.action!==google.picker.Action.PICKED) return;
-        const doc=d.docs[0];
-        $('status').textContent=' Downloading from Drive…';
+    new google.picker.PickerBuilder().addView(view).setOAuthToken(accessToken).setDeveloperKey(CONFIG.googleApiKey)
+      .setCallback(async d=>{if(d.action!==google.picker.Action.PICKED)return;const doc=d.docs[0];setStatus(' Downloading from Drive…');
         const r=await fetch('https://www.googleapis.com/drive/v3/files/'+doc.id+'?alt=media',{headers:{Authorization:'Bearer '+accessToken}});
-        const blob=await r.blob();
-        setFile(new File([blob], doc.name||'drive.pdf', {type:'application/pdf'}));
-        $('status').textContent='';
-      }).build();
-    picker.setVisible(true);
+        const blob=await r.blob(); await setFile(new File([blob],doc.name||'drive.pdf',{type:'application/pdf'})); setStatus('');
+      }).build().setVisible(true);
   }
 }
 </script>

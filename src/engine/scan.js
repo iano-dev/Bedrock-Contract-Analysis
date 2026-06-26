@@ -3,7 +3,7 @@
 // cite "Article/clause" with a page number.
 
 import { PATTERNS, CATEGORIES } from '../data/patterns.js';
-import { offsetToPage } from '../extract/pdf.js';
+import { offsetToPage } from '../extract/pages.js';
 
 function snippet(text, index, length, pad = 90) {
   const start = Math.max(0, index - pad);

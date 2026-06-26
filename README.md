@@ -66,6 +66,25 @@ npm run web      # http://localhost:3000
 
 The PDF viewer uses the bundled pdf.js **legacy** build served locally, so it works **offline** and on older corporate browsers.
 
+**Architecture (so it can run on Netlify):** PDF rendering, text extraction, and OCR all happen **in the browser** (pdf.js + tesseract.js, served locally from `web/public/vendor/`, staged by `npm run build:web`). The server only runs the pure-JS rules engine + optional Claude pass and generates deliverables — no native binaries, no stored state. The local Express server (`web/server.js`) and the Netlify functions (`netlify/functions/`) expose the same `/api/analyze` and `/api/deliverable` endpoints, so the same client works in both places.
+
+## Deploy to Netlify
+
+The repo is Netlify-ready (`netlify.toml`):
+
+- **Build command:** `npm run build:web` (stages the browser vendor assets into `web/public/vendor/`).
+- **Publish dir:** `web/public`. **Functions dir:** `netlify/functions` (bundled with esbuild).
+- The two functions (`/api/analyze`, `/api/deliverable`) are pure JS and bundle to ~1 MB.
+
+Connect the GitHub repo in Netlify (or `netlify deploy`), and set site environment variables as needed:
+
+| Variable | Effect |
+|---|---|
+| `ANTHROPIC_API_KEY` | Enables the Claude-assisted pass in the analyze function. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_API_KEY` | Enables the in-browser Google Drive picker. |
+
+OCR runs in the visitor's browser (tesseract.js), so it works on the hosted site without any server-side native dependencies.
+
 ### Google Drive (optional)
 
 The Drive button is gated on a Google Cloud OAuth client. Set two env vars and restart:

@@ -14,7 +14,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { CATEGORIES } from '../data/patterns.js';
-import { offsetToPage } from '../extract/pdf.js';
+import { offsetToPage } from '../extract/pages.js';
 import { applyTierPosture } from './tiers.js';
 import { buildSummary } from './analyze.js';
 

@@ -6,7 +6,7 @@
 // never tells you the actual obligations.
 
 import { MASTERFORMAT_HINTS } from '../data/patterns.js';
-import { offsetToPage } from '../extract/pdf.js';
+import { offsetToPage } from '../extract/pages.js';
 
 const NAMED_DOC_PATTERNS = [
   { label: 'Master Subcontract Agreement (MSA)', re: /\b(master subcontract agreement|MSA)\b/gi },

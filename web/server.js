@@ -1,29 +1,20 @@
-// Web UI: a document-review workspace. Upload a subcontract (drag-and-drop,
-// file picker, or Google Drive), analyze it, then review findings side-by-side
-// with the rendered PDF — click a finding to highlight where it lives in the doc.
+// Local web server — mirrors the Netlify deployment so the same browser client
+// works in both places. The browser does PDF rendering, text extraction, and
+// OCR; this server only runs the rules engine + optional Claude pass and
+// generates deliverables. Run via `npm run web` (which stages vendor assets
+// first). Stateless — nothing is stored between requests.
 
 import express from 'express';
-import multer from 'multer';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { analyzePdfBuffer } from '../src/index.js';
+import { runAnalysis } from '../src/engine/run.js';
 import { buildMarkdown, buildDocx } from '../src/deliverables/index.js';
 import { loadCounterparties } from '../src/engine/tiers.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
-
+app.use(express.json({ limit: '30mb' }));
 app.use(express.static(join(__dirname, 'public')));
-// Serve the pdf.js *legacy* browser build locally so the viewer works offline
-// and on older corporate browsers (the modern build uses very new JS APIs).
-app.use('/vendor/pdfjs', express.static(join(__dirname, '..', 'node_modules', 'pdfjs-dist', 'legacy', 'build')));
-app.use(express.json());
-
-// In-memory store: id -> { analysis, buffer, mime, markdown }. The buffer is kept
-// so the viewer can re-fetch the original PDF for rendering.
-const store = new Map();
-let counter = 0;
 
 app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
@@ -37,60 +28,38 @@ app.get('/api/config', (_req, res) => {
 
 app.get('/api/counterparties', (_req, res) => res.json(loadCounterparties()));
 
-app.post('/api/analyze', upload.single('contract'), async (req, res) => {
+app.post('/api/analyze', async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
-    const tier = req.body.tier && req.body.tier !== 'auto' ? Number(req.body.tier) : 'auto';
-    const llm = req.body.llm === 'on' ? true : req.body.llm === 'off' ? false : 'auto';
-    let bidAssumptions = {};
-    if (req.body.bidAssumptions) {
-      try { bidAssumptions = JSON.parse(req.body.bidAssumptions); } catch { /* ignore */ }
+    if (!req.body?.text || !req.body.text.trim()) {
+      return res.status(400).json({ error: 'No contract text supplied (extraction may have failed in the browser).' });
     }
-    const analysis = await analyzePdfBuffer(req.file.buffer, {
-      fileName: req.file.originalname,
-      tier,
-      bidAssumptions,
-      llm,
-    });
-    const id = `a${++counter}`;
-    const isPdf = (req.file.mimetype || '').includes('pdf') || /\.pdf$/i.test(req.file.originalname || '');
-    store.set(id, { analysis, buffer: req.file.buffer, mime: isPdf ? 'application/pdf' : req.file.mimetype });
-    if (store.size > 30) store.delete(store.keys().next().value);
-    res.json({ id, analysis, viewable: isPdf, markdown: buildMarkdown(analysis) });
+    const analysis = await runAnalysis(req.body);
+    res.json({ analysis });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// Serve the original uploaded file back for in-browser rendering.
-app.get('/api/file/:id', (req, res) => {
-  const entry = store.get(req.params.id);
-  if (!entry) return res.status(404).send('Expired — re-upload.');
-  res.setHeader('Content-Type', entry.mime || 'application/octet-stream');
-  res.send(entry.buffer);
-});
-
-app.get('/api/download/:id.:fmt', async (req, res) => {
-  const entry = store.get(req.params.id);
-  if (!entry) return res.status(404).send('Analysis expired — re-run.');
-  const { analysis } = entry;
-  const base = (analysis.metadata.project || analysis.fileName || 'analysis').replace(/[^a-z0-9]+/gi, '-').slice(0, 50);
-  if (req.params.fmt === 'docx') {
+app.post('/api/deliverable', async (req, res) => {
+  const { analysis, format = 'docx' } = req.body || {};
+  if (!analysis) return res.status(400).send('Missing analysis');
+  const base = (analysis.metadata?.project || analysis.fileName || 'analysis').replace(/[^a-z0-9]+/gi, '-').slice(0, 50);
+  if (format === 'docx') {
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.setHeader('Content-Disposition', `attachment; filename="${base}.docx"`);
     return res.send(await buildDocx(analysis));
   }
-  if (req.params.fmt === 'md') {
+  if (format === 'md') {
     res.setHeader('Content-Type', 'text/markdown');
     res.setHeader('Content-Disposition', `attachment; filename="${base}.md"`);
     return res.send(buildMarkdown(analysis));
   }
-  if (req.params.fmt === 'json') {
+  if (format === 'json') {
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', `attachment; filename="${base}.json"`);
     return res.send(JSON.stringify(analysis, null, 2));
   }
-  res.status(400).send('Unknown format.');
+  res.status(400).send('Unknown format');
 });
 
 const PORT = process.env.PORT || 3000;

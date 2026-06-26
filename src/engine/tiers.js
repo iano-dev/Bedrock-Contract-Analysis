@@ -6,15 +6,12 @@
 // Tier 2: everyone else. Full review, flag everything. DEFAULT for unknowns —
 //   failing safe means flagging more, not less.
 
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+// Imported as a module so it bundles cleanly in serverless functions (no fs /
+// __dirname). Editing the JSON requires a restart of the local server.
+import counterparties from '../data/counterparties.json' with { type: 'json' };
 
 export function loadCounterparties() {
-  const raw = readFileSync(join(__dirname, '../data/counterparties.json'), 'utf8');
-  return JSON.parse(raw);
+  return counterparties;
 }
 
 function matches(name, entry) {

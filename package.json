@@ -8,7 +8,8 @@
   },
   "scripts": {
     "analyze": "node src/cli.js",
-    "web": "node web/server.js",
+    "build:web": "node scripts/build-web.mjs",
+    "web": "node scripts/build-web.mjs && node web/server.js",
     "test": "node --test"
   },
   "engines": {

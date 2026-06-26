@@ -11,6 +11,8 @@
 import { createRequire } from 'node:module';
 import { ocrPdfPages, ocrAvailable } from './ocr.js';
 
+export { offsetToPage } from './pages.js';
+
 const require = createRequire(import.meta.url);
 
 // pdf-parse exposes a per-page render hook; we use it to build the page map.
@@ -97,12 +99,4 @@ export async function extractPdf(buffer, { ocr = 'auto', minCharsPerPage = 100, 
 
   const { text, pages } = stitch(pageTexts);
   return { text, pages, pageCount, ocrUsed, ocrPages, scannedPageCount: scannedPages.length, warnings };
-}
-
-// Resolve a character offset to a page number using the page map.
-export function offsetToPage(pages, offset) {
-  for (const p of pages) {
-    if (offset >= p.start && offset <= p.end) return p.page;
-  }
-  return pages.length ? pages[pages.length - 1].page : null;
 }
