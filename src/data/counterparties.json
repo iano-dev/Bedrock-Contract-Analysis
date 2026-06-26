@@ -1,0 +1,18 @@
+{
+  "_comment": "Editable counterparty tier list. Tier 1 = large/blue-chip GCs: accept most contracts, narrow review to scope + schedule. Anyone not listed defaults to Tier 2 (full review). Match is case-insensitive substring against the detected GC/counterparty name. Add aliases as needed.",
+  "tier1": [
+    { "name": "Skanska", "aliases": ["Skanska USA", "Skanska Building"] },
+    { "name": "Turner Construction", "aliases": ["Turner"] },
+    { "name": "Hoffman Construction", "aliases": ["Hoffman"] },
+    { "name": "Mortenson", "aliases": ["M.A. Mortenson"] },
+    { "name": "Andersen Construction", "aliases": ["Andersen"] },
+    { "name": "Howard S. Wright", "aliases": ["Howard S Wright", "Balfour Beatty"] },
+    { "name": "JE Dunn", "aliases": ["J.E. Dunn", "JE Dunn Construction"] },
+    { "name": "Fortis Construction", "aliases": ["Fortis"] }
+  ],
+  "tier2_known": [
+    { "name": "P&C Construction", "aliases": ["P and C Construction"], "note": "Seen on Cedar Park MS Seismic PWA" },
+    { "name": "MB Structures", "aliases": [], "note": "Seen on Holcomb Elementary AGC sub" },
+    { "name": "Empire", "aliases": ["Empire Construction"], "note": "Seen on Crunch Fitness Vancouver WA" }
+  ]
+}

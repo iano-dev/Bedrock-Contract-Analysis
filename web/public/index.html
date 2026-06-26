@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bedrock Contract Analyzer</title>
+<style>
+  :root { --hi:#b02a37; --med:#997404; --lo:#0f5132; --bg:#f6f7f9; --ink:#1f2328; --line:#d8dee4; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin:0; background:var(--bg); color:var(--ink); }
+  header { background:#343a40; color:#fff; padding:18px 24px; }
+  header h1 { margin:0; font-size:20px; }
+  header p { margin:4px 0 0; opacity:.8; font-size:13px; }
+  main { max-width:1100px; margin:0 auto; padding:24px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:20px; margin-bottom:20px; }
+  label { display:block; font-weight:600; margin:12px 0 4px; font-size:14px; }
+  select, input[type=file], textarea { width:100%; padding:8px; border:1px solid var(--line); border-radius:6px; font:inherit; }
+  textarea { min-height:90px; font-family:ui-monospace,Menlo,monospace; font-size:12px; }
+  button { background:#0969da; color:#fff; border:0; padding:10px 18px; border-radius:6px; font-size:15px; cursor:pointer; margin-top:14px; }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:16px; flex-wrap:wrap; }
+  .row > div { flex:1; min-width:220px; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; color:#fff; }
+  .HIGH{background:var(--hi);} .MEDIUM{background:var(--med);} .LOW{background:var(--lo);}
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { border:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
+  th { background:#343a40; color:#fff; }
+  tr.HIGH td:first-child{background:#f8d7da;} tr.MEDIUM td:first-child{background:#fff3cd;} tr.LOW td:first-child{background:#d4edda;}
+  .muted{color:#57606a;font-size:13px;}
+  .downloads a { display:inline-block; margin-right:10px; }
+  .err{color:var(--hi);font-weight:600;}
+  details{margin-top:10px;}
+  pre{white-space:pre-wrap;background:#f6f8fa;border:1px solid var(--line);padding:12px;border-radius:6px;font-size:12px;overflow:auto;max-height:420px;}
+  .stat{display:inline-block;margin-right:18px;font-size:14px;}
+  .stat b{font-size:20px;}
+</style>
+</head>
+<body>
+<header>
+  <h1>Bedrock Contract Analyzer</h1>
+  <p>Tiered triage · clause flagging · written report + risk table + phased checklist · GC-response email variants</p>
+</header>
+<main>
+  <div class="card">
+    <form id="form">
+      <label>Subcontract PDF</label>
+      <input type="file" id="file" accept="application/pdf,.pdf,.txt" required />
+      <div class="row">
+        <div>
+          <label>Counterparty tier</label>
+          <select id="tier">
+            <option value="auto">Auto-suggest (default · unknown → Tier 2 full review)</option>
+            <option value="1">Tier 1 — large/blue-chip GC (accept-most; scope + schedule)</option>
+            <option value="2">Tier 2 — full review, flag everything</option>
+          </select>
+        </div>
+      </div>
+      <label>Bid assumptions (optional JSON — enables bid-vs-schedule cross-check)</label>
+      <textarea id="bid" placeholder='{ "basis": "straight-time", "pricedMobilizations": 1, "additionalMobRate": 350, "standbyRate": 150 }'></textarea>
+      <button id="go" type="submit">Analyze</button>
+      <span id="status" class="muted"></span>
+    </form>
+  </div>
+
+  <div id="results" style="display:none">
+    <div class="card" id="summary"></div>
+    <div class="card">
+      <h3>Risk-rated summary table</h3>
+      <div id="table"></div>
+    </div>
+    <div class="card downloads">
+      <h3>Deliverables (generated simultaneously)</h3>
+      <p id="dl"></p>
+      <details><summary>Full Markdown report</summary><pre id="md"></pre></details>
+    </div>
+  </div>
+</main>
+
+<script>
+const form = document.getElementById('form');
+const statusEl = document.getElementById('status');
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const file = document.getElementById('file').files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('contract', file);
+  fd.append('tier', document.getElementById('tier').value);
+  const bid = document.getElementById('bid').value.trim();
+  if (bid) fd.append('bidAssumptions', bid);
+
+  document.getElementById('go').disabled = true;
+  statusEl.textContent = ' Analyzing…';
+  try {
+    const res = await fetch('/api/analyze', { method:'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Analysis failed');
+    render(data);
+  } catch (err) {
+    statusEl.innerHTML = ' <span class="err">' + err.message + '</span>';
+  } finally {
+    document.getElementById('go').disabled = false;
+  }
+});
+
+function esc(s){ return (s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+function render(data){
+  statusEl.textContent='';
+  const a = data.analysis;
+  document.getElementById('results').style.display='block';
+  const s = a.summary;
+  const c = a.tier===1 ? s.negotiate : s.all;
+  document.getElementById('summary').innerHTML = `
+    <h3>${esc(a.metadata.project || a.fileName || 'Analysis')}</h3>
+    <p class="muted">Tier ${a.tier} — ${esc(a.tierSuggestion.reason)}</p>
+    <div>
+      <span class="stat"><b>${c.HIGH}</b> <span class="pill HIGH">HIGH</span></span>
+      <span class="stat"><b>${c.MEDIUM}</b> <span class="pill MEDIUM">MEDIUM</span></span>
+      <span class="stat"><b>${c.LOW}</b> <span class="pill LOW">LOW</span></span>
+      <span class="stat"><b>${s.incorporatedDocs}</b> incorporated docs</span>
+      <span class="stat"><b>${s.contestedItems}</b> contested</span>
+      <span class="stat"><b>${s.attorneyReviewItems}</b> attorney-review</span>
+    </div>
+    <p class="muted">${esc(a.metadata.contractType)}${a.metadata.contractValue ? ' · '+esc(a.metadata.contractValue) : ''}${a.extraction ? ' · '+a.extraction.pageCount+' pages' : ''}</p>
+    ${(a.extraction && a.extraction.warnings && a.extraction.warnings.length) ? '<p class="err">'+a.extraction.warnings.map(esc).join('<br>')+'</p>' : ''}`;
+
+  const rows = a.flags.map(f=>{
+    const loc=f.locations[0]||{};
+    const where=[loc.article, loc.page?('p.'+loc.page):null].filter(Boolean).join(', ')||'—';
+    const tags=[f.attorneyReview?'⚖️':'', (a.tier===1&&f.posture!=='negotiate')?'<span class="muted">[accept-and-proceed]</span>':''].join(' ');
+    return `<tr class="${f.severity}">
+      <td><span class="pill ${f.severity}">${f.severity}</span></td>
+      <td><b>${esc(f.title)}</b> ${tags}<br><span class="muted">${esc((loc.clauseText||'').slice(0,160))}</span></td>
+      <td>${f.category}</td>
+      <td>${f.confidence==='contested'?'<b class="err">CONTESTED</b>':'firm'}</td>
+      <td>${esc(where)}</td>
+      <td>${esc(f.action)}</td></tr>`;
+  }).join('');
+  document.getElementById('table').innerHTML = a.flags.length
+    ? `<table><thead><tr><th>Sev</th><th>Issue</th><th>Cat</th><th>Conf</th><th>Loc</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table>`
+    : '<p class="muted">No taxonomy patterns matched — verify extraction quality and review manually.</p>';
+
+  document.getElementById('dl').innerHTML =
+    `<a href="/api/download/${data.id}.docx">⬇ Word (.docx)</a>` +
+    `<a href="/api/download/${data.id}.md">⬇ Markdown</a>` +
+    `<a href="/api/download/${data.id}.json">⬇ JSON</a>`;
+  document.getElementById('md').textContent = data.markdown;
+}
+</script>
+</body>
+</html>
