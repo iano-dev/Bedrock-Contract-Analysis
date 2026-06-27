@@ -24,6 +24,9 @@
   #drop{border:2px dashed #b6c0cc;border-radius:12px;padding:40px 20px;text-align:center;color:#57606a;transition:.15s;cursor:pointer;}
   #drop.drag{border-color:var(--accent);background:#f0f6ff;color:var(--accent);}
   #drop b{color:var(--ink);}
+  #biddrop{border:2px dashed #b6c0cc;border-radius:10px;padding:18px 16px;text-align:center;color:#57606a;transition:.15s;cursor:pointer;}
+  #biddrop.drag{border-color:var(--accent);background:#f0f6ff;color:var(--accent);}
+  #biddrop b{color:var(--ink);}
   .opts{display:flex;gap:14px;flex-wrap:wrap;margin-top:16px;}
   .opts > div{flex:1;min-width:200px;}
   label{display:block;font-weight:600;margin:10px 0 4px;font-size:13px;}
@@ -200,7 +203,10 @@
       <summary>Optional: upload your bid / estimate</summary>
       <p class="muted" style="margin:8px 0">Upload the bid or estimate you submitted (PDF or text). Claude reads what you priced — labor basis, mobilizations, rates — and the analyzer flags work the contract pushes <b>outside</b> what you bid as possible change orders. Skip it and you still get the full analysis.</p>
       <input type="file" id="bidfile" accept="application/pdf,.pdf,.txt" hidden>
-      <button type="button" class="btn alt" id="bidBrowse">Choose bid file</button>
+      <div id="biddrop">
+        <p style="margin:.2em 0"><b>Drag &amp; drop</b> your bid here</p>
+        <p class="muted" style="margin:.2em 0;font-size:12px">or click to browse (PDF or text)</p>
+      </div>
       <div id="bidChosen" class="muted" style="margin-top:8px"></div>
     </details>
     <div class="row2">
@@ -378,14 +384,18 @@ drop.onclick=()=>fileInput.click();
 drop.addEventListener('drop',e=>{if(e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);});
 fileInput.onchange=()=>{if(fileInput.files[0]) setFile(fileInput.files[0]);};
 $('newBtn').onclick=async()=>{ await clearSession(); location.reload(); };
-// Optional bid/estimate upload.
-$('bidBrowse').onclick=()=>$('bidfile').click();
-$('bidfile').onchange=async()=>{
-  const f=$('bidfile').files[0]; if(!f) return;
+// Optional bid/estimate upload — click to browse or drag & drop.
+const biddrop=$('biddrop');
+biddrop.onclick=()=>$('bidfile').click();
+['dragenter','dragover'].forEach(ev=>biddrop.addEventListener(ev,e=>{e.preventDefault();e.stopPropagation();biddrop.classList.add('drag');}));
+['dragleave','drop'].forEach(ev=>biddrop.addEventListener(ev,e=>{e.preventDefault();e.stopPropagation();biddrop.classList.remove('drag');}));
+biddrop.addEventListener('drop',e=>{if(e.dataTransfer.files[0]) setBidFile(e.dataTransfer.files[0]);});
+$('bidfile').onchange=()=>{ if($('bidfile').files[0]) setBidFile($('bidfile').files[0]); };
+async function setBidFile(f){
   const bytes=await f.arrayBuffer();
   state.bidFile={bytes,name:f.name,isPdf:/pdf/i.test(f.type)||/\.pdf$/i.test(f.name)};
-  $('bidChosen').innerHTML='Bid: <b>'+esc(f.name)+'</b> — read when you Analyze';
-};
+  $('bidChosen').innerHTML='Bid: <b>'+esc(f.name)+'</b> ('+Math.round(f.size/1024)+' KB) — read when you Analyze';
+}
 
 async function setFile(f){
   const bytes=await f.arrayBuffer();
