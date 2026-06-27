@@ -165,7 +165,7 @@ const ENRICH_MAX_CHARS = 36000; // ~9k tokens — one fast call
 // CENTERED on the scope/inclusions/exclusions language instead. Returns windows
 // around every scope marker, merged and capped — or the head of the document if
 // no marker is found.
-const SCOPE_EXTRACT_MAX = 32000; // chars of scope-centered excerpt for extraction
+const SCOPE_EXTRACT_MAX = 36000; // chars of scope-centered excerpt for extraction
 const SCOPE_MARKERS =
   /\b(scope of (?:work|services|the work)|description of (?:the )?work|work to be performed|the following scope|statement of work|special provisions|\binclusions?\b|\bexclusions?\b|\bexcludes?\b|\bclarifications?\b|assumptions and (?:qualifications|exclusions)|qualifications and (?:assumptions|exclusions)|scope:)\b/gi;
 
@@ -177,8 +177,10 @@ export function buildScopeExcerpt(text, maxChars) {
   let m;
   while ((m = SCOPE_MARKERS.exec(text)) !== null && hits.length < 60) hits.push(m.index);
   if (!hits.length) return text.slice(0, maxChars);
-  const BEFORE = 1000;
-  const AFTER = 6500;
+  // Enumerated scope lists (Inclusions/Clarifications 1–15) often run onto the
+  // next page, so reach well past each marker to keep the list intact.
+  const BEFORE = 800;
+  const AFTER = 9000;
   const windows = hits.map((i) => [Math.max(0, i - BEFORE), Math.min(text.length, i + AFTER)]).sort((a, b) => a[0] - b[0]);
   const merged = [];
   for (const w of windows) {
@@ -238,28 +240,28 @@ export async function llmQuickEnrich(documentText, { existingFlags = [] } = {}) 
 // of it, so this is its own call over a generous scope-centered excerpt, at medium
 // effort, told to copy EVERY line verbatim and tag what kind it is.
 const ScopeItemSchema = z.object({
-  text: z.string().describe('One scope line copied VERBATIM from the contract (a single inclusion, clarification, exclusion, sub-bullet, rate, or alternate). Keep it as written; do not paraphrase or merge multiple lines.'),
+  ref: z.string().nullable().describe('The item\'s number/letter exactly as written in the document, e.g. "B.3", "B.11", "A.1", or the sub-bullet it belongs to — null if it has none.'),
+  text: z.string().describe('The scope line copied VERBATIM from the contract (one inclusion, clarification, exclusion, sub-bullet, rate, or alternate). Keep it as written; do not paraphrase, merge, or renumber.'),
   kind: z
     .enum(['inclusion', 'clarification', 'exclusion', 'rate', 'alternate', 'other'])
-    .describe('inclusion = work we must perform; clarification = a qualifying note; exclusion = work explicitly NOT included; rate = a unit price/allowance (e.g. standby $150/MH, $1,000/mobilization, salvage 20%); alternate = a priced alternate; other = anything else specific.'),
+    .describe('inclusion = work we must perform; clarification = a qualifying note about how/what; exclusion = work explicitly NOT included ("Excludes…", "No overcutting allowed", "by others"); rate = a unit price/allowance (standby $150/MH, $1,000/mobilization, salvage 20%); alternate = a priced alternate or "include the alternate to…"; other = anything else specific.'),
 });
 const ScopeSchema = z.object({
-  scopeItems: z.array(ScopeItemSchema).describe('Every specific scope line in the excerpt. Be exhaustive.'),
+  scopeItems: z.array(ScopeItemSchema).describe('Every enumerated scope item, in document order. Be exhaustive — do not stop early.'),
 });
 
-const SCOPE_INSTRUCTIONS = `Extract the EXACT scope of the subcontractor's (Bedrock's) work from the contract excerpt below.
+const SCOPE_INSTRUCTIONS = `Pull the ACTUAL scope of the subcontractor's (Bedrock's) work out of the contract excerpt below — the way an estimator scanning the document marks up the real work, NOT the generic legal language.
 
-Be EXHAUSTIVE — capture EVERY specific line, not a summary:
-- Each numbered/lettered Inclusion and Clarification, AND each nested sub-bullet, as its OWN item.
-- Every explicit Exclusion (e.g. "Excludes removal of furred / framed wall framing…") — these matter most; tag them kind:"exclusion".
-- Every unit rate, allowance, or condition (e.g. "Standby billed at $150/MH", "Mobilizations $1,000 each if added to master schedule", "Salvage 20% brick for re-use, stored onsite by others") — tag kind:"rate".
-- Each priced Alternate (tag kind:"alternate"), and specific Division/Section scope assignments (e.g. "Division 02 — Structural Demolition").
+WHERE THE SCOPE LIVES: the real scope is the ENUMERATED lists — typically an "A. Inclusions" list and a "B. Clarifications" list with items numbered 1, 2, 3 …, plus indented sub-bullets and explicit "Excludes…" lines. These numbered items ARE the scope. There may also be a Scope of Work / Exclusions / Specification-Sections list. Capture EVERY item.
 
-Rules:
-- Copy each line VERBATIM so it can be located in the document; do not paraphrase, combine, or renumber.
-- EXCLUDE pure boilerplate ("furnish all labor, equipment and tools necessary to perform the Work", entire-agreement clauses, generic incorporation language).
-- If a clarification both qualifies scope and states a number (mobilizations, standby), include it.
-- Return an empty array only if the excerpt genuinely has no specific scope.
+Be EXHAUSTIVE and do not stop early:
+- Return ONE scope item per numbered/lettered line, in document order, and each indented sub-bullet as its own item.
+- These lists routinely CONTINUE ACROSS A PAGE BREAK. If you see items 1–8 and then a page header/footer, the SAME list resumes (9, 10, 11 …) immediately after — capture those too. Do not let a page break end the list.
+- IGNORE page headers/footers and the boilerplate that interrupts the list: page numbers, "AGC DOCUMENT NO. 600", "SUBCONTRACT NO.: …", "PROJECT: …", "The Associated General Contractors of America".
+- Put the item's number/letter as written in "ref" (e.g. "B.3", "B.11", "A.1"); null if none.
+- Tag "kind" per the schema. Exclusions ("Excludes…", "No overcutting allowed", "by others") and rates ($150/MH, $1,000/mobilization, salvage 20%) matter most — never drop them.
+
+EXCLUDE pure legal boilerplate (entire-agreement, indemnity, insurance, payment terms, generic "furnish all labor, equipment and tools necessary to perform the Work"). Keep only the operational work/scope items. Copy each line VERBATIM so it can be located. Return an empty array only if the excerpt genuinely has no enumerated scope.
 
 --- CONTRACT (scope-focused excerpt) ---
 `;
@@ -270,7 +272,7 @@ export async function llmExtractScope(documentText) {
   const c = client();
   const res = await c.messages.parse({
     model: MODEL,
-    max_tokens: 6000,
+    max_tokens: 8000,
     system: systemBlocks(),
     messages: [{ role: 'user', content: `${SCOPE_INSTRUCTIONS}${excerpt}\n---` }],
     output_config: { format: zodOutputFormat(ScopeSchema, 'scope'), effort: 'medium' },
@@ -278,7 +280,7 @@ export async function llmExtractScope(documentText) {
   const out = res.parsed_output || { scopeItems: [] };
   const items = (Array.isArray(out.scopeItems) ? out.scopeItems : [])
     .filter((s) => s && typeof s.text === 'string' && s.text.trim())
-    .map((s) => ({ text: s.text.trim(), kind: s.kind || 'other' }));
+    .map((s) => ({ ref: s.ref && String(s.ref).trim() ? String(s.ref).trim() : null, text: s.text.trim(), kind: s.kind || 'other' }));
   return { scopeItems: items };
 }
 

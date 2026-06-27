@@ -64,6 +64,18 @@ test('buildScopeExcerpt: pulls a deeply-buried scope section out of a long contr
   assert.ok(ex.includes('core drill 14 penetrations'), 'specific scope text is captured');
 });
 
+test('buildScopeExcerpt: keeps an enumerated Clarifications list intact across a page break', () => {
+  const filler = 'This Agreement is made by and between the parties hereto. '.repeat(700); // ~40k of boilerplate
+  const b1to8 = 'B. Clarifications: 1. Prevailing Wage. 2. Phased project, multiple mobilizations. 3. All vertical assembly sawcutting. 4. All horizontal assembly sawcutting. 5. Salvage 20% brick. 6. Standby to be billed at $150/MH. 7. Mobilizations to be $1,000 each. 8. All work to conform to applicable codes. ';
+  const pageBreak = ' 14 AGC DOCUMENT NO. 600 SUBCONTRACT FOR BUILDING CONSTRUCTION 1990, The Associated General Contractors of America SUBCONTRACT NO.: 25033-202 PROJECT: 25033- ';
+  const b9to15 = '9. Includes all dust Control. 10. Includes clean-up of concrete slurry. 11. No overcutting allowed (all slabs to be polished concrete). 12. Includes all drop boxes and disposal of own debris. 13. Include the alternate to sawcut and remove the slab at existing kitchen. 14. Include the alternate to sawcut and remove at Plumbing/Electrical Trenches. 15. Reference Hazardous material plan and specifications. ';
+  const text = filler + b1to8 + pageBreak + b9to15 + 'C. General Conditions: ' + 'z'.repeat(20000);
+  const ex = buildScopeExcerpt(text, 36000);
+  assert.ok(ex.includes('Prevailing Wage'), 'first clause B.1 captured');
+  assert.ok(ex.includes('No overcutting allowed'), 'B.11 (after the page break) captured');
+  assert.ok(ex.includes('Reference Hazardous material plan'), 'last clause B.15 captured across the page break');
+});
+
 test('buildScopeExcerpt: short text returned unchanged; no markers falls back to head', () => {
   assert.equal(buildScopeExcerpt('short doc', 30000), 'short doc');
   const noMarker = 'x'.repeat(40000);

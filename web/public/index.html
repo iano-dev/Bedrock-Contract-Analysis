@@ -71,6 +71,7 @@
   .scopelist li{font-size:12.5px;line-height:1.4;color:#1d2530;cursor:pointer;}
   .scopelist li .st:hover{color:var(--accent);text-decoration:underline;}
   .scopelist li.k-exclusion{list-style:none;margin-left:-18px;}
+  .sref{display:inline-block;font-size:10px;font-weight:700;color:#1a512a;background:#dff0e1;border-radius:3px;padding:1px 5px;margin-right:6px;vertical-align:middle;min-width:26px;text-align:center;}
   .sk{display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.03em;border-radius:3px;padding:1px 5px;margin-right:6px;vertical-align:middle;}
   .sk.excl{background:#fbe3e3;color:#a01622;}
   .sk.rate{background:#e3eefb;color:#1a4d8f;}
@@ -566,12 +567,12 @@ function renderComments(a){
 // (quantities, dimensions, zones, cut/core types) you actually price and perform.
 function renderScope(a){
   const box=$('scopebox'); if(!box) return;
-  const items=(a.scope||[]).map(s=>typeof s==='string'?{text:s,kind:'other'}:s).filter(s=>s&&s.text&&s.text.trim());
+  const items=(a.scope||[]).map(s=>typeof s==='string'?{text:s,kind:'other',ref:null}:s).filter(s=>s&&s.text&&s.text.trim());
   if(!items.length){ box.innerHTML=''; box.style.display='none'; return; }
   box.style.display='';
   const tagFor=k=>k==='exclusion'?'<span class="sk excl">EXCLUDED</span>':k==='rate'?'<span class="sk rate">rate</span>':k==='alternate'?'<span class="sk alt">alt</span>':k==='clarification'?'<span class="sk note">note</span>':'';
-  box.innerHTML='<div class="scopehdr">📋 Scope of your work <span class="scopesub">(exact, from the contract — click to locate)</span></div>'+
-    '<ul class="scopelist">'+items.map(s=>`<li class="k-${esc(s.kind||'other')}">${tagFor(s.kind)}<span class="st">${esc(s.text)}</span></li>`).join('')+'</ul>';
+  box.innerHTML='<div class="scopehdr">📋 Scope of your work <span class="scopesub">('+items.length+' items, verbatim from the contract — click to locate)</span></div>'+
+    '<ul class="scopelist">'+items.map(s=>`<li class="k-${esc(s.kind||'other')}">${s.ref?`<span class="sref">${esc(s.ref)}</span>`:''}${tagFor(s.kind)}<span class="st">${esc(s.text)}</span></li>`).join('')+'</ul>';
   box.querySelectorAll('.scopelist li').forEach((li,i)=>{ li.onclick=()=>locateQuote(items[i].text); });
 }
 // Dedicated, exhaustive scope extraction — its own call so the long nested
