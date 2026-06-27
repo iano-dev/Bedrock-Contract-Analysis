@@ -341,7 +341,13 @@ const RedlineSchema = z.object({
   rationale: z.string().describe('One or two sentences: why we are asking for this change, tied to what we priced.'),
 });
 
+const QuoteItemSchema = z.object({
+  item: z.string().describe('A scope line / bid item from Bedrock\'s own quote, copied as written (e.g. "Base Bid", "Alternate – Floor Sink Demo", "Sawcut & remove slab at existing kitchen").'),
+  amount: z.string().nullable().describe('The dollar amount for that line as written (e.g. "$101,655"), or null if the quote does not show a price for it.'),
+});
+
 const ScopeCompareSchema = z.object({
+  quoteScope: z.array(QuoteItemSchema).describe('What WE priced — the line items / scope from Bedrock\'s own quote/bid, in order, with amounts where shown. Empty array only if the bid has no identifiable scope.'),
   summary: z.string().describe('One or two plain sentences on how well the contract scope matches our quoted scope overall.'),
   redlines: z.array(RedlineSchema).describe('Concrete, sendable scope changes. Empty array if the contract scope already matches the quote.'),
 });
@@ -359,10 +365,10 @@ function scopeItemsToText(scopeItems) {
 // only falls back to a contract excerpt when no list was extracted. Low effort:
 // the inputs are short and focused, so a heavier pass isn't needed.
 export async function llmScopeCompare({ contractText, bidText, scopeItems }) {
-  if (!bidText?.trim()) return { summary: '', redlines: [] };
+  if (!bidText?.trim()) return { quoteScope: [], summary: '', redlines: [] };
   const fromList = scopeItemsToText(scopeItems);
   const contract = fromList || buildScopeExcerpt(contractText || '', 16000);
-  if (!contract.trim()) return { summary: '', redlines: [] };
+  if (!contract.trim()) return { quoteScope: [], summary: '', redlines: [] };
   const c = client();
   const bid = bidText.slice(0, 12000);
   const res = await c.messages.parse({
@@ -374,6 +380,7 @@ export async function llmScopeCompare({ contractText, bidText, scopeItems }) {
         role: 'user',
         content:
           `Compare the SCOPE in Bedrock's own QUOTE/BID against the SCOPE the CONTRACT binds Bedrock to, and propose redline language to send back to the general contractor so the contract matches what Bedrock actually priced.\n\n` +
+          `First, in "quoteScope", list what WE priced — the line items / scope from our own quote, in order, with the dollar amount where the bid shows one (Base Bid, each Alternate, etc.). Copy item names as written.\n\n` +
           `Focus on the EXACT scope: quantities, dimensions, locations/zones, assemblies, cut/saw/core types, inclusions, exclusions, and pricing basis (straight time vs. premium, number of mobilizations). Ignore generic boilerplate.\n\n` +
           `For every material mismatch produce one redline:\n` +
           `- If the CONTRACT demands more than the quote covers (extra area, extra penetrations, work not priced), propose either an explicit EXCLUSION or that the item be priced as a change.\n` +
@@ -386,12 +393,15 @@ export async function llmScopeCompare({ contractText, bidText, scopeItems }) {
     ],
     output_config: { format: zodOutputFormat(ScopeCompareSchema, 'scope_comparison'), effort: 'low' },
   });
-  const out = res.parsed_output || { summary: '', redlines: [] };
+  const out = res.parsed_output || { quoteScope: [], summary: '', redlines: [] };
   // Drop any degenerate placeholder/filler redlines the model may still emit.
   const redlines = (Array.isArray(out.redlines) ? out.redlines : []).filter(
     (r) => r && r.issue && r.suggestedLanguage && !/^\s*placeholder\s*$/i.test(r.issue) && !/^\s*placeholder\s*$/i.test(r.suggestedLanguage)
   );
-  return { summary: out.summary || '', redlines };
+  const quoteScope = (Array.isArray(out.quoteScope) ? out.quoteScope : [])
+    .filter((q) => q && q.item && q.item.trim())
+    .map((q) => ({ item: q.item.trim(), amount: q.amount && String(q.amount).trim() ? String(q.amount).trim() : null }));
+  return { quoteScope, summary: out.summary || '', redlines };
 }
 
 // Convert raw LLM flags into the engine's Flag shape, attaching a page number by

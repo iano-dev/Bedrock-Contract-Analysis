@@ -88,8 +88,8 @@ test('llmExtractScope: empty document short-circuits to no scope (no API call)',
 });
 
 test('llmScopeCompare: empty quote or contract short-circuits to no redlines (no API call)', async () => {
-  assert.deepEqual(await llmScopeCompare({ contractText: cedar, bidText: '' }), { summary: '', redlines: [] });
-  assert.deepEqual(await llmScopeCompare({ contractText: '', bidText: 'some bid' }), { summary: '', redlines: [] });
+  assert.deepEqual(await llmScopeCompare({ contractText: cedar, bidText: '' }), { quoteScope: [], summary: '', redlines: [] });
+  assert.deepEqual(await llmScopeCompare({ contractText: '', bidText: 'some bid' }), { quoteScope: [], summary: '', redlines: [] });
 });
 
 test('enrichAnalysisWithLlm: no API key -> rules engine untouched, llm.used false', async () => {

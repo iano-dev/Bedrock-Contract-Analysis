@@ -67,7 +67,19 @@
   .sidepane{flex:1 1 42%;min-width:240px;background:var(--panel);overflow:hidden;border-left:1px solid var(--line);display:flex;flex-direction:column;}
   .summary{padding:12px 14px;border-bottom:1px solid var(--line);background:var(--panel);flex:0 0 auto;}
   #findingsView{flex:1 1 58%;overflow:auto;min-height:80px;}
+  /* collapsible cards: a chevron in the header toggles the body */
+  .chev{display:inline-block;width:12px;font-size:10px;color:#8a93a0;transition:transform .15s;cursor:pointer;user-select:none;}
+  .collapsed > .cardbody,.comment.collapsed .cbody,.redline.collapsed .rlbody{display:none;}
+  .collapsed > .cardhdr .chev,.comment.collapsed .chev,.redline.collapsed .chev{transform:rotate(-90deg);}
+  .cardhdr{cursor:pointer;}
   .scopebox{margin:10px 12px 0;border:1px solid #cfe3d0;background:#f2faf3;border-radius:8px;padding:9px 12px;}
+  .quotescopebox{margin:10px 12px 0;border:1px solid #bcd4ef;background:#f1f6fc;border-radius:8px;padding:9px 12px;}
+  .qshdr{font-weight:600;font-size:13px;color:#1a4d8f;margin-bottom:6px;}
+  .qshdr .scopesub{font-weight:400;font-size:11px;color:#57606a;}
+  .qslist{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:3px;}
+  .qslist li{font-size:12.5px;line-height:1.4;color:#1d2530;display:flex;justify-content:space-between;gap:10px;border-bottom:1px dotted #d6e2f0;padding:2px 0;}
+  .qslist li .qamt{font-variant-numeric:tabular-nums;font-weight:600;color:#1a4d8f;white-space:nowrap;}
+  .qslist li.qstotal{border-bottom:none;border-top:1px solid #bcd4ef;margin-top:2px;padding-top:4px;font-weight:600;}
   .scopehdr{font-weight:600;font-size:13px;color:#1a512a;margin-bottom:6px;}
   .scopehdr .scopesub{font-weight:400;font-size:11px;color:#57606a;}
   .scopelist{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px;}
@@ -231,6 +243,7 @@
       <div class="summary" id="summary"></div>
       <div id="findingsView">
         <div class="scopebox" id="scopebox"></div>
+        <div class="quotescopebox" id="quotescopebox"></div>
         <div class="redlinebox" id="redlinebox"></div>
         <div class="comments" id="comments"></div>
         <div class="section-extra" id="extra"></div>
@@ -516,7 +529,8 @@ function openReview(a,viewable){
   $('hdrdl').querySelectorAll('button').forEach(b=>b.onclick=()=>download(b.dataset.f));
   $('docname').textContent=esc(a.fileName||'document');
   const rb=$('redlinebox'); if(rb){ rb.innerHTML=''; rb.style.display='none'; }
-  renderSummary(a); renderScope(a); renderComments(a); renderExtra(a);
+  const qb=$('quotescopebox'); if(qb){ qb.innerHTML=''; qb.style.display='none'; }
+  renderSummary(a); renderScope(a); renderQuoteScope(a); renderComments(a); renderExtra(a);
   if(viewable && state.pdf) renderViewer().catch(e=>{$('pages').innerHTML='<p style="color:#fff;padding:20px">Could not render PDF: '+esc(e.message)+'</p>';});
   else $('pages').innerHTML='<p style="color:#fff;padding:20px">Document preview is available for PDF uploads. Findings are shown on the right.</p>';
   reviewActive=true; armBackGuard(); saveSession();
@@ -564,9 +578,10 @@ function renderComments(a){
     const where=[loc.article,loc.page?('p.'+loc.page):null].filter(Boolean).join(' · ')||'—';
     const tags=[f.confidence==='contested'?'<span class="tag contested">CONTESTED</span>':'',f.attorneyReview?'<span class="tag atty">⚖️ atty</span>':'',f.source==='llm'?'<span class="tag ai">🤖 AI</span>':'',(a.tier===1&&f.posture!=='negotiate')?'<span class="tag accept">accept-and-proceed</span>':''].join(' ');
     const el=document.createElement('div'); el.className='comment s-'+f.severity;
-    el.innerHTML=`<div class="top"><span class="pill ${f.severity}">${f.severity}</span><span class="title">${esc(f.title)}</span><span class="loc">${esc(where)}</span></div>
-      <div>${tags}</div>${loc.clauseText?`<div class="quote">“${esc(loc.clauseText)}”</div>`:''}
-      <div class="why">${esc(f.why)}</div><div class="action"><b>Action:</b> ${esc(f.action)}</div>`;
+    el.innerHTML=`<div class="top"><span class="chev">▾</span><span class="pill ${f.severity}">${f.severity}</span><span class="title">${esc(f.title)}</span><span class="loc">${esc(where)}</span></div>
+      <div class="cbody"><div>${tags}</div>${loc.clauseText?`<div class="quote">“${esc(loc.clauseText)}”</div>`:''}
+      <div class="why">${esc(f.why)}</div><div class="action"><b>Action:</b> ${esc(f.action)}</div></div>`;
+    el.querySelector('.chev').onclick=(ev)=>{ev.stopPropagation();el.classList.toggle('collapsed');};
     el.onclick=()=>{document.querySelectorAll('.comment.sel').forEach(c=>c.classList.remove('sel'));el.classList.add('sel');if(loc.page)locateInDoc(loc.page,loc.quote||loc.clauseText||'');};
     box.appendChild(el);
   });
@@ -574,15 +589,30 @@ function renderComments(a){
 // The exact scope of OUR work, pulled verbatim by the Claude pass. Distinct from
 // the generic "furnish all labor…" boilerplate — these are the measurable items
 // (quantities, dimensions, zones, cut/core types) you actually price and perform.
+// Make a section card's header toggle its body (collapse/expand).
+function wireCollapse(box){ const h=box.querySelector('.cardhdr'); if(h) h.onclick=()=>box.classList.toggle('collapsed'); }
 function renderScope(a){
   const box=$('scopebox'); if(!box) return;
   const items=(a.scope||[]).map(s=>typeof s==='string'?{text:s,kind:'other',ref:null}:s).filter(s=>s&&s.text&&s.text.trim());
   if(!items.length){ box.innerHTML=''; box.style.display='none'; return; }
-  box.style.display='';
+  box.style.display=''; box.classList.remove('collapsed');
   const tagFor=k=>k==='exclusion'?'<span class="sk excl">EXCLUDED</span>':k==='rate'?'<span class="sk rate">rate</span>':k==='alternate'?'<span class="sk alt">alt</span>':k==='clarification'?'<span class="sk note">note</span>':'';
-  box.innerHTML='<div class="scopehdr">📋 Scope of your work <span class="scopesub">('+items.length+' items, verbatim from the contract — click to locate)</span></div>'+
-    '<ul class="scopelist">'+items.map(s=>`<li class="k-${esc(s.kind||'other')}">${s.ref?`<span class="sref">${esc(s.ref)}</span>`:''}${tagFor(s.kind)}<span class="st">${esc(s.text)}</span></li>`).join('')+'</ul>';
+  box.innerHTML='<div class="cardhdr"><span class="chev">▾</span><span class="scopehdr" style="margin:0">📋 Scope of your work <span class="scopesub">('+items.length+' items, verbatim from the contract — click to locate)</span></span></div>'+
+    '<div class="cardbody"><ul class="scopelist">'+items.map(s=>`<li class="k-${esc(s.kind||'other')}">${s.ref?`<span class="sref">${esc(s.ref)}</span>`:''}${tagFor(s.kind)}<span class="st">${esc(s.text)}</span></li>`).join('')+'</ul></div>';
+  wireCollapse(box);
   box.querySelectorAll('.scopelist li').forEach((li,i)=>{ li.onclick=()=>locateQuote(items[i].text); });
+}
+// What WE priced — the line items from the uploaded bid (returned by the
+// comparison pass). Shown as its own card next to the contract scope.
+function renderQuoteScope(a){
+  const box=$('quotescopebox'); if(!box) return;
+  const items=(a.quoteScope||[]).filter(q=>q&&q.item&&q.item.trim());
+  if(!items.length){ box.innerHTML=''; box.style.display='none'; return; }
+  box.style.display=''; box.classList.remove('collapsed');
+  const isTotal=s=>/\btotal\b|contract price/i.test(s);
+  box.innerHTML='<div class="cardhdr"><span class="chev">▾</span><span class="qshdr" style="margin:0">🧮 Your quote scope <span class="scopesub">('+items.length+' items, from your bid)</span></span></div>'+
+    '<div class="cardbody"><ul class="qslist">'+items.map(q=>`<li class="${isTotal(q.item)?'qstotal':''}"><span class="qitem">${esc(q.item)}</span>${q.amount?`<span class="qamt">${esc(q.amount)}</span>`:''}</li>`).join('')+'</ul></div>';
+  wireCollapse(box);
 }
 // Dedicated, exhaustive scope extraction — its own call so the long nested
 // Inclusions/Clarifications/Exclusions/rates list isn't summarized away.
@@ -607,7 +637,7 @@ async function runScopeCompare(){
   try{
     const d=await runJob('scope-compare',{ contractText:state.docText, bidText:state.bidText, scopeItems:a.scope||[] });
     if(d.skipped){ if(box){box.style.display='none';box.innerHTML='';} return; }
-    a.scopeCompare=d; renderRedlines(a); saveSession();
+    a.scopeCompare=d; if(d.quoteScope) a.quoteScope=d.quoteScope; renderQuoteScope(a); renderRedlines(a); saveSession();
   }catch(e){ if(box){ box.style.display=''; box.innerHTML='<div class="rlhdr">🧾 Quote vs. contract scope</div><div class="rlsummary">Couldn’t compare the quote this time — the contract analysis itself is unaffected. <a href="#" id="rlretry">Try again</a>.</div>'; const rt=$('rlretry'); if(rt) rt.onclick=(ev)=>{ev.preventDefault();runScopeCompare();}; } }
 }
 // fetch JSON with a hard timeout; surfaces 401 as a non-retryable error.
@@ -662,24 +692,27 @@ function renderRedlines(a){
   const d=a.scopeCompare; if(!d){ box.style.display='none'; box.innerHTML=''; return; }
   const lines=(d.redlines||[]).filter(Boolean);
   const dirLabel={'contract-exceeds-quote':'Contract asks more than quoted','quote-exceeds-contract':'Quote assumes more than granted','conflict':'Figures conflict','silent':'Contract silent'};
-  box.style.display='';
+  box.style.display=''; box.classList.remove('collapsed');
   if(!lines.length){
-    box.innerHTML='<div class="rlhdr">🧾 Quote vs. contract scope</div><div class="rlsummary">'+esc(d.summary||'The contract scope matches your quote — no language changes suggested.')+'</div>';
+    box.innerHTML='<div class="cardhdr"><span class="chev">▾</span><span class="rlhdr" style="margin:0">🧾 Quote vs. contract scope</span></div><div class="cardbody"><div class="rlsummary">'+esc(d.summary||'The contract scope matches your quote — no language changes suggested.')+'</div></div>';
+    wireCollapse(box);
     return;
   }
-  box.innerHTML='<div class="rlhdr">🧾 Quote vs. contract scope <span class="rlsub">('+lines.length+' suggested change'+(lines.length>1?'s':'')+' to send back)</span></div>'+
-    (d.summary?'<div class="rlsummary">'+esc(d.summary)+'</div>':'')+
+  box.innerHTML='<div class="cardhdr"><span class="chev">▾</span><span class="rlhdr" style="margin:0">🧾 Quote vs. contract scope <span class="rlsub">('+lines.length+' suggested change'+(lines.length>1?'s':'')+' to send back)</span></span></div>'+
+    '<div class="cardbody">'+(d.summary?'<div class="rlsummary">'+esc(d.summary)+'</div>':'')+
     lines.map((l,i)=>`
       <div class="redline s-${esc(l.severity||'MEDIUM')}" data-i="${i}">
-        <div class="rltop"><span class="pill ${esc(l.severity||'MEDIUM')}">${esc(l.severity||'MEDIUM')}</span><span class="rltitle">${esc(l.issue||'Scope change')}</span><span class="rltag">${esc(dirLabel[l.direction]||'')}</span></div>
-        ${l.contractLanguage?`<div class="rlcur" title="Click to locate in the document">Contract now: “${esc(l.contractLanguage)}”</div>`:'<div class="rlcur silent">Contract is silent on this.</div>'}
+        <div class="rltop"><span class="chev">▾</span><span class="pill ${esc(l.severity||'MEDIUM')}">${esc(l.severity||'MEDIUM')}</span><span class="rltitle">${esc(l.issue||'Scope change')}</span><span class="rltag">${esc(dirLabel[l.direction]||'')}</span></div>
+        <div class="rlbody">${l.contractLanguage?`<div class="rlcur" title="Click to locate in the document">Contract now: “${esc(l.contractLanguage)}”</div>`:'<div class="rlcur silent">Contract is silent on this.</div>'}
         ${l.quoteBasis?`<div class="rlquote">Your quote: ${esc(l.quoteBasis)}</div>`:''}
         <div class="rllbl">Suggested language to send the GC:</div>
         <div class="rlsuggest">${esc(l.suggestedLanguage||'')}</div>
         <div class="rlrat">${esc(l.rationale||'')}</div>
-        <button class="rlcopy" data-i="${i}">Copy language</button>
+        <button class="rlcopy" data-i="${i}">Copy language</button></div>
       </div>`).join('')+
-    '<button class="rlcopyall">Copy all suggested language</button>';
+    '<button class="rlcopyall">Copy all suggested language</button></div>';
+  wireCollapse(box);
+  box.querySelectorAll('.redline').forEach(rl=>{ const ch=rl.querySelector('.chev'); if(ch) ch.onclick=(ev)=>{ev.stopPropagation();rl.classList.toggle('collapsed');}; });
   box.querySelectorAll('.rlcur').forEach((el,i)=>{ const l=lines[i]; if(l&&l.contractLanguage){ el.style.cursor='pointer'; el.onclick=()=>locateQuote(l.contractLanguage); } });
   box.querySelectorAll('.rlcopy').forEach(btn=>{ btn.onclick=()=>copyText(lines[Number(btn.dataset.i)].suggestedLanguage,btn); });
   const allBtn=box.querySelector('.rlcopyall');
