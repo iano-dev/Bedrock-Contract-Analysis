@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 
 import { analyze } from '../src/engine/analyze.js';
 import { suggestTier } from '../src/engine/tiers.js';
+import { oregonStatutoryChecks } from '../src/engine/oregonChecks.js';
 import { buildMarkdown, buildDocx } from '../src/deliverables/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -51,6 +52,26 @@ test('Cedar Park: prevailing wage detected and contract value parsed', () => {
   const a = analyze({ text: cedar, tier: 2 });
   assert.equal(a.metadata.prevailingWage, true);
   assert.match(a.metadata.contractType, /PWA|prevailing/i);
+});
+
+test('Oregon retainage cap: 10% retainage flags OR-retainage-cap (HIGH, firm, attorney)', () => {
+  const flags = oregonStatutoryChecks(cedar, []);
+  const f = flags.find((x) => x.id === 'OR-retainage-cap');
+  assert.ok(f, 'retainage cap flag present for 10% retainage');
+  assert.equal(f.severity, 'HIGH');
+  assert.equal(f.confidence, 'firm');
+  assert.equal(f.attorneyReview, true);
+  assert.match(f.title, /10%/);
+});
+
+test('Oregon retainage cap: 5% retainage does NOT flag', () => {
+  const flags = oregonStatutoryChecks(skanska, []);
+  assert.equal(flags.find((x) => x.id === 'OR-retainage-cap'), undefined);
+});
+
+test('Oregon retainage cap surfaces through analyze() for the Cedar Park PWA', () => {
+  const a = analyze({ text: cedar, tier: 2 });
+  assert.ok(a.flags.some((f) => f.id === 'OR-retainage-cap'), 'OR-retainage-cap present in analysis flags');
 });
 
 test('Bid cross-check: straight-time basis surfaces a firm premium CO and mobilization delta', () => {

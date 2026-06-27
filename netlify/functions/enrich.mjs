@@ -18,10 +18,10 @@ export default async (req) => {
   if (!body.documentText || !body.documentText.trim()) return json({ error: 'No document.' }, 400);
   try {
     const existingFlags = body.existingFlags || [];
-    const { facts, rawFlags, truncated } = await llmQuickEnrich(body.documentText, { existingFlags });
+    const { facts, rawFlags, scopeItems, truncated } = await llmQuickEnrich(body.documentText, { existingFlags });
     let flags = normalizeLlmFlags(rawFlags, { text: body.documentText, pages: body.pages || [], existingFlags });
     flags = applyTierPosture(flags, Number(body.tier) === 1 ? 1 : 2);
-    return json({ flags, facts, truncated });
+    return json({ flags, facts, scope: scopeItems, truncated });
   } catch (e) {
     return json({ error: e.message }, 500);
   }

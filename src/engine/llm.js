@@ -161,6 +161,11 @@ const ENRICH_MAX_CHARS = 36000; // ~9k tokens — one fast call
 
 const EnrichSchema = z.object({
   facts: MetadataSchema,
+  scopeItems: z
+    .array(z.string())
+    .describe(
+      'The EXACT, specific scope of the subcontractor\'s work, copied verbatim from the contract — concrete quantities, dimensions, locations/zones, assemblies, and cut/saw/core types (e.g. "saw cut 2,207 SF of 6\\" slab in Areas A–C", "core drill 14 penetrations"). EXCLUDE generic boilerplate such as "furnish all labor, equipment and tools necessary to perform the Work." Return an empty array if the document only contains generic scope language.'
+    ),
   flags: z.array(FlagSchema),
 });
 
@@ -177,13 +182,13 @@ export async function llmQuickEnrich(documentText, { existingFlags = [] } = {}) 
     messages: [
       {
         role: 'user',
-        content: `${FLAG_INSTRUCTIONS}\n\nAlso extract the contract facts (type, parties, value, scope, prevailing wage).\n\nAlready-detected risks (do not repeat):\n${existingList}\n\n--- CONTRACT (excerpt) ---\n${doc}\n---`,
+        content: `${FLAG_INSTRUCTIONS}\n\nAlso extract the contract facts (type, parties, value, scope, prevailing wage).\n\nSeparately, populate "scopeItems" with the EXACT, specific scope of OUR (the subcontractor's) work — copy the concrete quantities, dimensions, locations/zones, assemblies, and cut/saw/core descriptions verbatim from the document. Do NOT include generic boilerplate ("furnish all labor and materials to perform the Work"); only the specific, measurable scope. Empty array if the document has no specific scope.\n\nAlready-detected risks (do not repeat):\n${existingList}\n\n--- CONTRACT (excerpt) ---\n${doc}\n---`,
       },
     ],
     output_config: { format: zodOutputFormat(EnrichSchema, 'enrichment'), effort: 'low' },
   });
   const out = res.parsed_output || { facts: null, flags: [] };
-  return { facts: out.facts || null, rawFlags: out.flags || [], truncated };
+  return { facts: out.facts || null, rawFlags: out.flags || [], scopeItems: out.scopeItems || [], truncated };
 }
 
 // Read a bid/estimate document and extract the structured assumptions used by

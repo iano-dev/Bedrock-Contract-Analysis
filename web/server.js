@@ -93,10 +93,10 @@ app.post('/api/enrich', requireAuth, async (req, res) => {
     if (!llmAvailable()) return res.json({ flags: [], facts: null, skipped: 'no-api-key' });
     if (!req.body?.documentText?.trim()) return res.status(400).json({ error: 'No document.' });
     const existingFlags = req.body.existingFlags || [];
-    const { facts, rawFlags, truncated } = await llmQuickEnrich(req.body.documentText, { existingFlags });
+    const { facts, rawFlags, scopeItems, truncated } = await llmQuickEnrich(req.body.documentText, { existingFlags });
     let flags = normalizeLlmFlags(rawFlags, { text: req.body.documentText, pages: req.body.pages || [], existingFlags });
     flags = applyTierPosture(flags, Number(req.body.tier) === 1 ? 1 : 2);
-    res.json({ flags, facts, truncated });
+    res.json({ flags, facts, scope: scopeItems, truncated });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

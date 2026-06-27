@@ -64,6 +64,12 @@
   .sidepane{flex:1 1 42%;min-width:240px;background:var(--panel);overflow:hidden;border-left:1px solid var(--line);display:flex;flex-direction:column;}
   .summary{padding:12px 14px;border-bottom:1px solid var(--line);background:var(--panel);flex:0 0 auto;}
   #findingsView{flex:1 1 58%;overflow:auto;min-height:80px;}
+  .scopebox{margin:10px 12px 0;border:1px solid #cfe3d0;background:#f2faf3;border-radius:8px;padding:9px 12px;}
+  .scopehdr{font-weight:600;font-size:13px;color:#1a512a;margin-bottom:6px;}
+  .scopehdr .scopesub{font-weight:400;font-size:11px;color:#57606a;}
+  .scopelist{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px;}
+  .scopelist li{font-size:12.5px;line-height:1.4;color:#1d2530;cursor:pointer;}
+  .scopelist li:hover{color:var(--accent);text-decoration:underline;}
   .hgutter{flex:0 0 6px;background:var(--line);cursor:row-resize;}
   .hgutter:hover{background:var(--accent);}
   #chatView{flex:1 1 42%;display:flex;flex-direction:column;min-height:120px;}
@@ -191,6 +197,7 @@
     <div class="sidepane" id="sidepane">
       <div class="summary" id="summary"></div>
       <div id="findingsView">
+        <div class="scopebox" id="scopebox"></div>
         <div class="comments" id="comments"></div>
         <div class="section-extra" id="extra"></div>
       </div>
@@ -389,7 +396,7 @@ function openReview(a,viewable){
   $('hdrdl').innerHTML=`<button class="dl" data-f="docx">⬇ Word</button><button class="dl" data-f="md">⬇ Markdown</button><button class="dl" data-f="json">⬇ JSON</button>`;
   $('hdrdl').querySelectorAll('button').forEach(b=>b.onclick=()=>download(b.dataset.f));
   $('docname').textContent=esc(a.fileName||'document');
-  renderSummary(a); renderComments(a); renderExtra(a);
+  renderSummary(a); renderScope(a); renderComments(a); renderExtra(a);
   if(viewable && state.pdf) renderViewer().catch(e=>{$('pages').innerHTML='<p style="color:#fff;padding:20px">Could not render PDF: '+esc(e.message)+'</p>';});
   else $('pages').innerHTML='<p style="color:#fff;padding:20px">Document preview is available for PDF uploads. Findings are shown on the right.</p>';
 }
@@ -443,6 +450,18 @@ function renderComments(a){
     box.appendChild(el);
   });
 }
+// The exact scope of OUR work, pulled verbatim by the Claude pass. Distinct from
+// the generic "furnish all labor…" boilerplate — these are the measurable items
+// (quantities, dimensions, zones, cut/core types) you actually price and perform.
+function renderScope(a){
+  const box=$('scopebox'); if(!box) return;
+  const items=(a.scope||[]).filter(s=>s&&s.trim());
+  if(!items.length){ box.innerHTML=''; box.style.display='none'; return; }
+  box.style.display='';
+  box.innerHTML='<div class="scopehdr">📋 Scope of your work <span class="scopesub">(exact, from the contract — click to locate)</span></div>'+
+    '<ul class="scopelist">'+items.map(s=>`<li>${esc(s)}</li>`).join('')+'</ul>';
+  box.querySelectorAll('.scopelist li').forEach((li,i)=>{ li.onclick=()=>locateQuote(items[i]); });
+}
 // Optional Claude pass — runs after the rules result is already shown, then
 // merges any AI-found clauses in. Best-effort: failure leaves findings intact.
 async function runEnrich(){
@@ -461,6 +480,7 @@ async function runEnrich(){
       a.flags=[...a.flags,...d.flags].sort((x,y)=>x.category.localeCompare(y.category)||rank[x.severity]-rank[y.severity]);
     }
     if(d.facts) fillFacts(a.metadata,d.facts);
+    if(d.scope&&d.scope.length){ a.scope=d.scope; renderScope(a); }
     a.llm={used:true,addedFlags:(d.flags||[]).length};
     recountSummary(a); renderSummary(a); renderComments(a); renderExtra(a);
   }catch(e){ a.llm={used:false,reason:'AI pass unavailable for this document'}; renderSummary(a); }

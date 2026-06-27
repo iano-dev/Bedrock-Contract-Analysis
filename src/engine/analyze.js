@@ -15,6 +15,7 @@ import { buildIncorporatedRegister } from './incorporated.js';
 import { suggestTier, applyTierPosture, loadCounterparties } from './tiers.js';
 import { bidCrossCheck } from './bidCrossCheck.js';
 import { detectFavorable } from './favorable.js';
+import { oregonStatutoryChecks } from './oregonChecks.js';
 
 // Severity counts for a flag list — shared by analyze() and the LLM enrichment.
 export function countSeverities(list) {
@@ -56,6 +57,10 @@ export function analyze({ text, pages = [], fileName = null, tier = 'auto', bidA
   else effectiveTier = Number(tier) === 1 ? 1 : 2;
 
   let flags = scanPatterns(text, pages);
+  flags = [...flags, ...oregonStatutoryChecks(text, pages)];
+  // Re-sort after merging statutory checks: category A→F, then HIGH→LOW.
+  const sevRank = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+  flags.sort((a, b) => a.category.localeCompare(b.category) || sevRank[a.severity] - sevRank[b.severity]);
   flags = applyTierPosture(flags, effectiveTier);
 
   const incorporated = buildIncorporatedRegister(text, pages);
