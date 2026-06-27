@@ -227,6 +227,62 @@ export async function llmParseBid(bidText) {
   return a;
 }
 
+// Compare the scope of OUR uploaded quote/bid against the scope the contract
+// actually binds us to, and draft redline language to send back to the GC so the
+// contract matches what we priced. One bounded call over both documents.
+const SCOPE_COMPARE_MAX = 30000; // chars per document — keep the single call bounded
+
+const RedlineSchema = z.object({
+  issue: z.string().describe('Short title of the scope mismatch, e.g. "Contract omits the 14 priced core-drill penetrations"'),
+  direction: z
+    .enum(['contract-exceeds-quote', 'quote-exceeds-contract', 'conflict', 'silent'])
+    .describe(
+      'contract-exceeds-quote = contract demands more than we priced (unpriced work / need exclusion); quote-exceeds-contract = we priced/assumed something the contract does not grant (need it added/confirmed); conflict = both state it but differ (quantity, location, premium time); silent = contract is silent on something our quote depends on'
+    ),
+  severity: z.enum(['HIGH', 'MEDIUM', 'LOW']).describe('HIGH if it exposes Bedrock to unpriced cost or unpaid work'),
+  contractLanguage: z
+    .string()
+    .nullable()
+    .describe('The exact current contract sentence/clause this redline targets, quoted VERBATIM so it can be located — or null if the contract is silent and we are proposing an addition'),
+  quoteBasis: z.string().nullable().describe('What our quote/bid says or assumes on this point (quantity, inclusion, exclusion, basis), or null'),
+  suggestedLanguage: z.string().describe('Ready-to-send replacement or added clause language that aligns the contract to our quote — written to paste into a redline or an email to the GC'),
+  rationale: z.string().describe('One or two sentences: why we are asking for this change, tied to what we priced.'),
+});
+
+const ScopeCompareSchema = z.object({
+  summary: z.string().describe('One or two plain sentences on how well the contract scope matches our quoted scope overall.'),
+  redlines: z.array(RedlineSchema).describe('Concrete, sendable scope changes. Empty array if the contract scope already matches the quote.'),
+});
+
+export async function llmScopeCompare({ contractText, bidText }) {
+  if (!contractText?.trim() || !bidText?.trim()) return { summary: '', redlines: [] };
+  const c = client();
+  const contract = contractText.slice(0, SCOPE_COMPARE_MAX);
+  const bid = bidText.slice(0, SCOPE_COMPARE_MAX);
+  const res = await c.messages.parse({
+    model: MODEL,
+    max_tokens: 4000,
+    system: systemBlocks(),
+    messages: [
+      {
+        role: 'user',
+        content:
+          `Compare the SCOPE in Bedrock's own QUOTE/BID against the SCOPE the CONTRACT binds Bedrock to, and propose redline language to send back to the general contractor so the contract matches what Bedrock actually priced.\n\n` +
+          `Focus on the EXACT scope: quantities, dimensions, locations/zones, assemblies, cut/saw/core types, inclusions, exclusions, and pricing basis (straight time vs. premium, number of mobilizations). Ignore generic boilerplate.\n\n` +
+          `For every material mismatch produce one redline:\n` +
+          `- If the CONTRACT demands more than the quote covers (extra area, extra penetrations, work not priced), propose either an explicit EXCLUSION or that the item be priced as a change.\n` +
+          `- If the QUOTE includes an assumption/exclusion the contract does not grant (e.g. priced one mobilization, straight time only, dewatering by others), propose adding that assumption/exclusion to the contract.\n` +
+          `- If both address an item but the numbers/locations CONFLICT, propose language matching the quoted figure.\n` +
+          `Quote the current contract sentence VERBATIM in contractLanguage so it can be located (null if the contract is simply silent). Write suggestedLanguage so it can be pasted straight into a redline or an email to the GC. If the scopes already match, return an empty redlines array.\n\n` +
+          `--- BEDROCK QUOTE / BID ---\n${bid}\n---\n\n--- CONTRACT ---\n${contract}\n---`,
+      },
+    ],
+    output_config: { format: zodOutputFormat(ScopeCompareSchema, 'scope_comparison'), effort: 'low' },
+  });
+  const out = res.parsed_output || { summary: '', redlines: [] };
+  return { summary: out.summary || '', redlines: Array.isArray(out.redlines) ? out.redlines : [] };
+}
+
 // Convert raw LLM flags into the engine's Flag shape, attaching a page number by
 // locating the quoted clause text in the document, and de-duping against the
 // rules-engine flags by title similarity.

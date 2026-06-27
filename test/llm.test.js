@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { analyze } from '../src/engine/analyze.js';
-import { llmAvailable, normalizeLlmFlags, enrichAnalysisWithLlm } from '../src/engine/llm.js';
+import { llmAvailable, normalizeLlmFlags, enrichAnalysisWithLlm, llmScopeCompare } from '../src/engine/llm.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cedar = readFileSync(join(__dirname, 'fixtures', 'cedar-park-pwa.txt'), 'utf8');
@@ -52,6 +52,11 @@ test('normalizeLlmFlags: shapes flags, attaches page, de-dupes vs rules flags', 
   assert.equal(f.page ?? f.locations[0].page, 1, 'page located from quoted clause text');
   assert.ok(f.id.startsWith('llm-'));
   assert.equal(f.categoryName, 'Administrative / preconditions to starting work');
+});
+
+test('llmScopeCompare: empty quote or contract short-circuits to no redlines (no API call)', async () => {
+  assert.deepEqual(await llmScopeCompare({ contractText: cedar, bidText: '' }), { summary: '', redlines: [] });
+  assert.deepEqual(await llmScopeCompare({ contractText: '', bidText: 'some bid' }), { summary: '', redlines: [] });
 });
 
 test('enrichAnalysisWithLlm: no API key -> rules engine untouched, llm.used false', async () => {
