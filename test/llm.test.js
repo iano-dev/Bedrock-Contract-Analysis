@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { analyze } from '../src/engine/analyze.js';
-import { llmAvailable, normalizeLlmFlags, enrichAnalysisWithLlm, llmScopeCompare } from '../src/engine/llm.js';
+import { llmAvailable, normalizeLlmFlags, enrichAnalysisWithLlm, llmScopeCompare, buildScopeExcerpt } from '../src/engine/llm.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cedar = readFileSync(join(__dirname, 'fixtures', 'cedar-park-pwa.txt'), 'utf8');
@@ -52,6 +52,22 @@ test('normalizeLlmFlags: shapes flags, attaches page, de-dupes vs rules flags', 
   assert.equal(f.page ?? f.locations[0].page, 1, 'page located from quoted clause text');
   assert.ok(f.id.startsWith('llm-'));
   assert.equal(f.categoryName, 'Administrative / preconditions to starting work');
+});
+
+test('buildScopeExcerpt: pulls a deeply-buried scope section out of a long contract', () => {
+  const filler = 'This Agreement is made by and between the parties. '.repeat(900); // ~45k chars of boilerplate
+  const scope = 'ARTICLE 16 SCOPE OF WORK. Inclusions: saw cut 2,207 SF of 6" slab in Areas A-C; core drill 14 penetrations. Standby billed at $150/MH.';
+  const text = filler + scope + ' '.repeat(20000);
+  const ex = buildScopeExcerpt(text, 30000);
+  assert.ok(ex.length <= 30000, 'excerpt is capped');
+  assert.ok(ex.includes('SCOPE OF WORK'), 'scope heading is captured');
+  assert.ok(ex.includes('core drill 14 penetrations'), 'specific scope text is captured');
+});
+
+test('buildScopeExcerpt: short text returned unchanged; no markers falls back to head', () => {
+  assert.equal(buildScopeExcerpt('short doc', 30000), 'short doc');
+  const noMarker = 'x'.repeat(40000);
+  assert.equal(buildScopeExcerpt(noMarker, 1000).length, 1000);
 });
 
 test('llmScopeCompare: empty quote or contract short-circuits to no redlines (no API call)', async () => {

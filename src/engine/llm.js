@@ -159,6 +159,40 @@ export async function llmFindClauses(text, { existingFlags = [], logger } = {}) 
 // enrichAnalysisWithLlm above is used by the CLI/library where there's no timeout.)
 const ENRICH_MAX_CHARS = 36000; // ~9k tokens — one fast call
 
+// The scope of work is often deep inside a long contract (e.g. an AGC 600's
+// "Article 16 — Special Provisions / Scope of Work" can sit on page 14 of 247).
+// Blindly taking the first N characters misses it entirely, so build an excerpt
+// CENTERED on the scope/inclusions/exclusions language instead. Returns windows
+// around every scope marker, merged and capped — or the head of the document if
+// no marker is found.
+const SCOPE_MARKERS =
+  /\b(scope of (?:work|services|the work)|description of (?:the )?work|work to be performed|the following scope|statement of work|\binclusions?\b|\bexclusions?\b|\bclarifications?\b|assumptions and (?:qualifications|exclusions)|qualifications and (?:assumptions|exclusions)|scope:)\b/gi;
+
+export function buildScopeExcerpt(text, maxChars) {
+  if (!text) return '';
+  if (text.length <= maxChars) return text;
+  SCOPE_MARKERS.lastIndex = 0;
+  const hits = [];
+  let m;
+  while ((m = SCOPE_MARKERS.exec(text)) !== null && hits.length < 40) hits.push(m.index);
+  if (!hits.length) return text.slice(0, maxChars);
+  const BEFORE = 1200;
+  const AFTER = 4500;
+  const windows = hits.map((i) => [Math.max(0, i - BEFORE), Math.min(text.length, i + AFTER)]).sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const w of windows) {
+    const last = merged[merged.length - 1];
+    if (last && w[0] <= last[1] + 400) last[1] = Math.max(last[1], w[1]);
+    else merged.push([...w]);
+  }
+  let out = '';
+  for (const [s, e] of merged) {
+    if (out.length >= maxChars) break;
+    out += (out ? '\n\n[…]\n\n' : '') + text.slice(s, e);
+  }
+  return out.slice(0, maxChars);
+}
+
 const EnrichSchema = z.object({
   facts: MetadataSchema,
   scopeItems: z
@@ -171,9 +205,19 @@ const EnrichSchema = z.object({
 
 export async function llmQuickEnrich(documentText, { existingFlags = [] } = {}) {
   const c = client();
-  let doc = documentText || '';
-  const truncated = doc.length > ENRICH_MAX_CHARS;
-  if (truncated) doc = doc.slice(0, ENRICH_MAX_CHARS);
+  const full = documentText || '';
+  const truncated = full.length > ENRICH_MAX_CHARS;
+  let doc;
+  if (!truncated) {
+    doc = full;
+  } else {
+    // Facts and early flags live up front; the scope section may be far deeper.
+    // Send the head for facts, then a scope-centered excerpt from the remainder.
+    const FRONT = 24000;
+    const front = full.slice(0, FRONT);
+    const scope = buildScopeExcerpt(full.slice(FRONT), ENRICH_MAX_CHARS - FRONT - 80);
+    doc = scope ? `${front}\n\n[… excerpt continues — scope of work section …]\n\n${scope}` : front;
+  }
   const existingList = existingFlags.map((f) => `- [${f.category}] ${f.title}`).join('\n') || '(none)';
   const res = await c.messages.parse({
     model: MODEL,
@@ -257,7 +301,9 @@ const ScopeCompareSchema = z.object({
 export async function llmScopeCompare({ contractText, bidText }) {
   if (!contractText?.trim() || !bidText?.trim()) return { summary: '', redlines: [] };
   const c = client();
-  const contract = contractText.slice(0, SCOPE_COMPARE_MAX);
+  // The contract's scope section may sit deep in a long document — center the
+  // excerpt on the scope language rather than taking the head. Bids are short.
+  const contract = buildScopeExcerpt(contractText, SCOPE_COMPARE_MAX);
   const bid = bidText.slice(0, SCOPE_COMPARE_MAX);
   const res = await c.messages.parse({
     model: MODEL,
@@ -273,14 +319,19 @@ export async function llmScopeCompare({ contractText, bidText }) {
           `- If the CONTRACT demands more than the quote covers (extra area, extra penetrations, work not priced), propose either an explicit EXCLUSION or that the item be priced as a change.\n` +
           `- If the QUOTE includes an assumption/exclusion the contract does not grant (e.g. priced one mobilization, straight time only, dewatering by others), propose adding that assumption/exclusion to the contract.\n` +
           `- If both address an item but the numbers/locations CONFLICT, propose language matching the quoted figure.\n` +
-          `Quote the current contract sentence VERBATIM in contractLanguage so it can be located (null if the contract is simply silent). Write suggestedLanguage so it can be pasted straight into a redline or an email to the GC. If the scopes already match, return an empty redlines array.\n\n` +
-          `--- BEDROCK QUOTE / BID ---\n${bid}\n---\n\n--- CONTRACT ---\n${contract}\n---`,
+          `Quote the current contract sentence VERBATIM in contractLanguage so it can be located (null if the contract is simply silent). Write suggestedLanguage so it can be pasted straight into a redline or an email to the GC.\n\n` +
+          `CRITICAL: Use only real content from the two documents below. NEVER output placeholder, dummy, or filler text (e.g. the word "placeholder"). If the contract excerpt does not contain a specific, concrete scope to compare against — or the scopes already match — return an EMPTY redlines array and say so plainly in the summary. Do not invent a redline just to fill the array.\n\n` +
+          `--- BEDROCK QUOTE / BID ---\n${bid}\n---\n\n--- CONTRACT (scope-focused excerpt) ---\n${contract}\n---`,
       },
     ],
-    output_config: { format: zodOutputFormat(ScopeCompareSchema, 'scope_comparison'), effort: 'low' },
+    output_config: { format: zodOutputFormat(ScopeCompareSchema, 'scope_comparison'), effort: 'medium' },
   });
   const out = res.parsed_output || { summary: '', redlines: [] };
-  return { summary: out.summary || '', redlines: Array.isArray(out.redlines) ? out.redlines : [] };
+  // Drop any degenerate placeholder/filler redlines the model may still emit.
+  const redlines = (Array.isArray(out.redlines) ? out.redlines : []).filter(
+    (r) => r && r.issue && r.suggestedLanguage && !/^\s*placeholder\s*$/i.test(r.issue) && !/^\s*placeholder\s*$/i.test(r.suggestedLanguage)
+  );
+  return { summary: out.summary || '', redlines };
 }
 
 // Convert raw LLM flags into the engine's Flag shape, attaching a page number by
