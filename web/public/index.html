@@ -438,9 +438,8 @@ async function analyze(){
     if(!res.ok) throw new Error(data.error||'Analysis failed');
     state.docText=payload.text; state.pages=payload.pages; state.chat=[];
     openReview(data.analysis,chosen.isPdf);
+    // runScopeExtract chains the quote comparison once the scope list is ready.
     if(body.llm){ runEnrich(); runScopeExtract(); }
-    if(state.bidText.trim()) runScopeCompare();
-    else if(body.llm) showQuoteHint();
   }catch(err){ setStatus(' <span class="err">'+esc(err.message)+'</span>'); $('analyzeBtn').disabled=false; }
 }
 // Extract text from a file (PDF text layer, or plain text) — used for the bid upload.
@@ -587,6 +586,9 @@ async function runScopeExtract(){
     if(d.skipped){ if(box){ box.style.display='none'; box.innerHTML=''; } return; }
     a.scope=d.scopeItems||[]; renderScope(a); saveSession();
   }catch(e){ if(box){ box.style.display='none'; box.innerHTML=''; } }
+  // Now that the contract scope list is known, compare the bid against it
+  // (or, with no bid, explain how to get the comparison).
+  if(state.bidText.trim()) runScopeCompare(); else showQuoteHint();
 }
 // When a quote/bid was uploaded, compare its scope to the contract's and draft
 // redline language to send back to the GC. Best-effort, runs after the review
@@ -595,14 +597,26 @@ async function runScopeCompare(){
   const a=state.analysis;
   const box=$('redlinebox'); if(box){ box.style.display=''; box.innerHTML='<div class="rlhdr">🧾 Quote vs. contract scope <span class="rlsub">comparing…</span></div>'; }
   try{
-    const r=await fetch('/api/scope-compare',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
-      contractText:state.docText, bidText:state.bidText,
-    })});
-    if(!r.ok) throw new Error('scope compare failed');
-    const d=await r.json();
+    const d=await postJsonRetry('/api/scope-compare',{ contractText:state.docText, bidText:state.bidText, scopeItems:a.scope||[] });
     if(d.skipped){ if(box){box.style.display='none';box.innerHTML='';} return; }
     a.scopeCompare=d; renderRedlines(a); saveSession();
-  }catch(e){ if(box){ box.style.display=''; box.innerHTML='<div class="rlhdr">🧾 Quote vs. contract scope</div><div class="rlsummary">Couldn’t compare the quote this time — the contract analysis itself is unaffected. Re-run to try again.</div>'; } }
+  }catch(e){ if(box){ box.style.display=''; box.innerHTML='<div class="rlhdr">🧾 Quote vs. contract scope</div><div class="rlsummary">Couldn’t compare the quote this time — the contract analysis itself is unaffected. <a href="#" id="rlretry">Try again</a>.</div>'; const rt=$('rlretry'); if(rt) rt.onclick=(ev)=>{ev.preventDefault();runScopeCompare();}; } }
+}
+// POST JSON with a hard timeout and a single retry — the scope comparison is an
+// Opus call behind a serverless function, so a transient slow start shouldn't
+// surface as a failure.
+async function postJson(url,body,timeoutMs){
+  const ctl=new AbortController(); const t=setTimeout(()=>ctl.abort(),timeoutMs||30000);
+  try{
+    const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:ctl.signal});
+    if(r.status===401){ showGate(); const e=new Error('Session expired'); e.noRetry=true; throw e; }
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    return await r.json();
+  } finally { clearTimeout(t); }
+}
+async function postJsonRetry(url,body,timeoutMs){
+  try{ return await postJson(url,body,timeoutMs); }
+  catch(e){ if(e&&e.noRetry) throw e; await new Promise(r=>setTimeout(r,1200)); return await postJson(url,body,timeoutMs); }
 }
 // No quote was uploaded — tell the user how to get the comparison rather than
 // leaving the section silently absent.

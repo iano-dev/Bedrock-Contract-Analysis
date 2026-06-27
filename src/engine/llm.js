@@ -322,8 +322,7 @@ export async function llmParseBid(bidText) {
 
 // Compare the scope of OUR uploaded quote/bid against the scope the contract
 // actually binds us to, and draft redline language to send back to the GC so the
-// contract matches what we priced. One bounded call over both documents.
-const SCOPE_COMPARE_MAX = 30000; // chars per document — keep the single call bounded
+// contract matches what we priced.
 
 const RedlineSchema = z.object({
   issue: z.string().describe('Short title of the scope mismatch, e.g. "Contract omits the 14 priced core-drill penetrations"'),
@@ -347,16 +346,28 @@ const ScopeCompareSchema = z.object({
   redlines: z.array(RedlineSchema).describe('Concrete, sendable scope changes. Empty array if the contract scope already matches the quote.'),
 });
 
-export async function llmScopeCompare({ contractText, bidText }) {
-  if (!contractText?.trim() || !bidText?.trim()) return { summary: '', redlines: [] };
+// Render the already-extracted scope items into a compact list for the prompt.
+function scopeItemsToText(scopeItems) {
+  return (Array.isArray(scopeItems) ? scopeItems : [])
+    .filter((s) => s && s.text && s.text.trim())
+    .map((s) => `- ${s.ref ? `[${s.ref}] ` : ''}${s.text.trim()}${s.kind && s.kind !== 'other' && s.kind !== 'inclusion' ? ` (${s.kind})` : ''}`)
+    .join('\n');
+}
+
+// Compare the bid against the contract scope. To stay well within the serverless
+// time limit, this prefers the already-extracted scope list (small, fast) and
+// only falls back to a contract excerpt when no list was extracted. Low effort:
+// the inputs are short and focused, so a heavier pass isn't needed.
+export async function llmScopeCompare({ contractText, bidText, scopeItems }) {
+  if (!bidText?.trim()) return { summary: '', redlines: [] };
+  const fromList = scopeItemsToText(scopeItems);
+  const contract = fromList || buildScopeExcerpt(contractText || '', 16000);
+  if (!contract.trim()) return { summary: '', redlines: [] };
   const c = client();
-  // The contract's scope section may sit deep in a long document — center the
-  // excerpt on the scope language rather than taking the head. Bids are short.
-  const contract = buildScopeExcerpt(contractText, SCOPE_COMPARE_MAX);
-  const bid = bidText.slice(0, SCOPE_COMPARE_MAX);
+  const bid = bidText.slice(0, 12000);
   const res = await c.messages.parse({
     model: MODEL,
-    max_tokens: 4000,
+    max_tokens: 3000,
     system: systemBlocks(),
     messages: [
       {
@@ -368,12 +379,12 @@ export async function llmScopeCompare({ contractText, bidText }) {
           `- If the CONTRACT demands more than the quote covers (extra area, extra penetrations, work not priced), propose either an explicit EXCLUSION or that the item be priced as a change.\n` +
           `- If the QUOTE includes an assumption/exclusion the contract does not grant (e.g. priced one mobilization, straight time only, dewatering by others), propose adding that assumption/exclusion to the contract.\n` +
           `- If both address an item but the numbers/locations CONFLICT, propose language matching the quoted figure.\n` +
-          `Quote the current contract sentence VERBATIM in contractLanguage so it can be located (null if the contract is simply silent). Write suggestedLanguage so it can be pasted straight into a redline or an email to the GC.\n\n` +
-          `CRITICAL: Use only real content from the two documents below. NEVER output placeholder, dummy, or filler text (e.g. the word "placeholder"). If the contract excerpt does not contain a specific, concrete scope to compare against — or the scopes already match — return an EMPTY redlines array and say so plainly in the summary. Do not invent a redline just to fill the array.\n\n` +
-          `--- BEDROCK QUOTE / BID ---\n${bid}\n---\n\n--- CONTRACT (scope-focused excerpt) ---\n${contract}\n---`,
+          `In contractLanguage, quote (or closely paraphrase) the relevant contract scope item so it can be located — include its [ref] if shown; null if the contract is simply silent. Write suggestedLanguage so it can be pasted straight into a redline or an email to the GC.\n\n` +
+          `CRITICAL: Use only real content from the two inputs below. NEVER output placeholder, dummy, or filler text (e.g. the word "placeholder"). If the scopes already match — or there is nothing concrete to compare — return an EMPTY redlines array and say so plainly in the summary. Do not invent a redline just to fill the array.\n\n` +
+          `--- BEDROCK QUOTE / BID ---\n${bid}\n---\n\n--- CONTRACT SCOPE ---\n${contract}\n---`,
       },
     ],
-    output_config: { format: zodOutputFormat(ScopeCompareSchema, 'scope_comparison'), effort: 'medium' },
+    output_config: { format: zodOutputFormat(ScopeCompareSchema, 'scope_comparison'), effort: 'low' },
   });
   const out = res.parsed_output || { summary: '', redlines: [] };
   // Drop any degenerate placeholder/filler redlines the model may still emit.

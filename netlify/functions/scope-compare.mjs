@@ -13,9 +13,9 @@ export default async (req) => {
   if (!llmAvailable()) return json({ summary: '', redlines: [], skipped: 'no-api-key' });
   let body;
   try { body = await req.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
-  if (!body.contractText?.trim() || !body.bidText?.trim()) return json({ summary: '', redlines: [] });
+  if (!body.bidText?.trim()) return json({ summary: '', redlines: [] });
   try {
-    const result = await llmScopeCompare({ contractText: body.contractText, bidText: body.bidText });
+    const result = await llmScopeCompare({ contractText: body.contractText, bidText: body.bidText, scopeItems: body.scopeItems });
     return json(result);
   } catch (e) {
     return json({ error: e.message }, 500);

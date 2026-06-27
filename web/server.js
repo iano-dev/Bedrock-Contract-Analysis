@@ -125,8 +125,8 @@ app.post('/api/parse-bid', requireAuth, async (req, res) => {
 app.post('/api/scope-compare', requireAuth, async (req, res) => {
   try {
     if (!llmAvailable()) return res.json({ summary: '', redlines: [], skipped: 'no-api-key' });
-    if (!req.body?.contractText?.trim() || !req.body?.bidText?.trim()) return res.json({ summary: '', redlines: [] });
-    res.json(await llmScopeCompare({ contractText: req.body.contractText, bidText: req.body.bidText }));
+    if (!req.body?.bidText?.trim()) return res.json({ summary: '', redlines: [] });
+    res.json(await llmScopeCompare({ contractText: req.body.contractText, bidText: req.body.bidText, scopeItems: req.body.scopeItems }));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
