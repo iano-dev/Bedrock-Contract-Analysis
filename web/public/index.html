@@ -580,9 +580,7 @@ async function runScopeExtract(){
   const a=state.analysis;
   const box=$('scopebox'); if(box){ box.style.display=''; box.innerHTML='<div class="scopehdr">📋 Scope of your work <span class="scopesub">extracting…</span></div>'; }
   try{
-    const r=await fetch('/api/scope',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({documentText:state.docText})});
-    if(!r.ok) throw new Error('scope failed');
-    const d=await r.json();
+    const d=await runJob('scope',{documentText:state.docText});
     if(d.skipped){ if(box){ box.style.display='none'; box.innerHTML=''; } return; }
     a.scope=d.scopeItems||[]; renderScope(a); saveSession();
   }catch(e){ if(box){ box.style.display='none'; box.innerHTML=''; } }
@@ -597,26 +595,50 @@ async function runScopeCompare(){
   const a=state.analysis;
   const box=$('redlinebox'); if(box){ box.style.display=''; box.innerHTML='<div class="rlhdr">🧾 Quote vs. contract scope <span class="rlsub">comparing…</span></div>'; }
   try{
-    const d=await postJsonRetry('/api/scope-compare',{ contractText:state.docText, bidText:state.bidText, scopeItems:a.scope||[] });
+    const d=await runJob('scope-compare',{ contractText:state.docText, bidText:state.bidText, scopeItems:a.scope||[] });
     if(d.skipped){ if(box){box.style.display='none';box.innerHTML='';} return; }
     a.scopeCompare=d; renderRedlines(a); saveSession();
   }catch(e){ if(box){ box.style.display=''; box.innerHTML='<div class="rlhdr">🧾 Quote vs. contract scope</div><div class="rlsummary">Couldn’t compare the quote this time — the contract analysis itself is unaffected. <a href="#" id="rlretry">Try again</a>.</div>'; const rt=$('rlretry'); if(rt) rt.onclick=(ev)=>{ev.preventDefault();runScopeCompare();}; } }
 }
-// POST JSON with a hard timeout and a single retry — the scope comparison is an
-// Opus call behind a serverless function, so a transient slow start shouldn't
-// surface as a failure.
-async function postJson(url,body,timeoutMs){
+// fetch JSON with a hard timeout; surfaces 401 as a non-retryable error.
+async function postJson(url,body,timeoutMs,method){
   const ctl=new AbortController(); const t=setTimeout(()=>ctl.abort(),timeoutMs||30000);
   try{
-    const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:ctl.signal});
+    const opts={method:method||'POST',signal:ctl.signal};
+    if((method||'POST')!=='GET'){ opts.headers={'content-type':'application/json'}; opts.body=JSON.stringify(body||{}); }
+    const r=await fetch(url,opts);
     if(r.status===401){ showGate(); const e=new Error('Session expired'); e.noRetry=true; throw e; }
     if(!r.ok) throw new Error('HTTP '+r.status);
     return await r.json();
   } finally { clearTimeout(t); }
 }
-async function postJsonRetry(url,body,timeoutMs){
-  try{ return await postJson(url,body,timeoutMs); }
-  catch(e){ if(e&&e.noRetry) throw e; await new Promise(r=>setTimeout(r,1200)); return await postJson(url,body,timeoutMs); }
+// Run a heavy LLM task. On Netlify (CONFIG.background) it kicks off a background
+// function — which can run for minutes, never hitting the 10s function limit —
+// and polls /api/job for the result. Locally (Express) it just calls the
+// synchronous endpoint, which has no time limit.
+async function runJob(task,payload){
+  if(CONFIG.background){
+    const jobId=(self.crypto&&crypto.randomUUID)?crypto.randomUUID():(Date.now()+'-'+Math.random().toString(16).slice(2));
+    const start=await fetch('/.netlify/functions/run-background',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jobId,task,payload})});
+    if(start.status===401){ showGate(); const e=new Error('Session expired'); e.noRetry=true; throw e; }
+    if(start.status!==202 && !start.ok) throw new Error('Could not start job (HTTP '+start.status+')');
+    return await pollJob(jobId);
+  }
+  return await postJson('/api/'+task,payload,180000);
+}
+async function pollJob(jobId,timeoutMs){
+  const deadline=Date.now()+(timeoutMs||300000);
+  let delay=900;
+  while(Date.now()<deadline){
+    await new Promise(r=>setTimeout(r,delay));
+    delay=Math.min(2500,delay+300);
+    let d;
+    try{ d=await postJson('/api/job?id='+encodeURIComponent(jobId),null,15000,'GET'); }
+    catch(e){ if(e&&e.noRetry) throw e; continue; } // transient poll error — keep trying
+    if(d.status==='done') return d.result;
+    if(d.status==='error') throw new Error(d.error||'The analysis failed.');
+  }
+  throw new Error('Timed out waiting for the analysis to finish.');
 }
 // No quote was uploaded — tell the user how to get the comparison rather than
 // leaving the section silently absent.
@@ -665,12 +687,10 @@ async function runEnrich(){
   const a=state.analysis;
   a.llm={pending:true}; renderSummary(a);
   try{
-    const r=await fetch('/api/enrich',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+    const d=await runJob('enrich',{
       documentText:state.docText, pages:state.pages, tier:a.tier,
       existingFlags:a.flags.map(f=>({category:f.category,title:f.title})),
-    })});
-    if(!r.ok) throw new Error('enrich failed');
-    const d=await r.json();
+    });
     if(d.skipped){ a.llm={used:false,reason:'no API key'}; renderSummary(a); return; }
     if(d.flags&&d.flags.length){
       const rank={HIGH:0,MEDIUM:1,LOW:2};
@@ -733,10 +753,7 @@ async function sendChat(){
   inp.value=''; addMsg('user',q); state.chat.push({role:'user',content:q});
   const bot=addMsg('bot','…'); state.chatBusy=true; $('chatsend').disabled=true;
   try{
-    const r=await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({documentText:state.docText,fileName:state.analysis.fileName,messages:state.chat.map(m=>({role:m.role,content:m.content}))})});
-    if(r.status===401){ showGate(); throw new Error('Session expired — sign in again.'); }
-    const d=await r.json();
-    if(!r.ok) throw new Error(d.error||'Chat failed');
+    const d=await runJob('chat',{documentText:state.docText,fileName:state.analysis.fileName,messages:state.chat.map(m=>({role:m.role,content:m.content}))});
     bot.textContent=d.answer||'(no answer)';
     if(d.quotes&&d.quotes.length&&state.pdf) renderCites(bot,d.quotes);
     state.chat.push({role:'assistant',content:d.answer,quotes:d.quotes||[]});

@@ -8,9 +8,9 @@ import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { analyze } from '../src/engine/analyze.js';
-import { llmQuickEnrich, llmParseBid, llmScopeCompare, llmExtractScope, normalizeLlmFlags, llmAvailable } from '../src/engine/llm.js';
-import { applyTierPosture } from '../src/engine/tiers.js';
-import { chatAboutContract, chatAvailable } from '../src/engine/chat.js';
+import { llmAvailable } from '../src/engine/llm.js';
+import { chatAvailable } from '../src/engine/chat.js';
+import { runTask } from '../src/engine/tasks.js';
 import { buildMarkdown, buildDocx } from '../src/deliverables/index.js';
 import { loadCounterparties } from '../src/engine/tiers.js';
 import {
@@ -34,6 +34,7 @@ app.get('/api/config', (_req, res) => {
     googleClientId: process.env.GOOGLE_CLIENT_ID || null,
     googleApiKey: process.env.GOOGLE_API_KEY || null,
     llmConfigured: !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN),
+    background: false, // local: synchronous endpoints, no serverless time limit
     authEnabled: authEnabled(),
     authConfig: {
       clientId: !!process.env.GOOGLE_CLIENT_ID,
@@ -88,48 +89,26 @@ app.post('/api/analyze', requireAuth, (req, res) => {
   }
 });
 
+// Local mirror of the async tasks — runs synchronously (Express has no timeout),
+// so the browser uses these directly when config.background is false.
 app.post('/api/enrich', requireAuth, async (req, res) => {
-  try {
-    if (!llmAvailable()) return res.json({ flags: [], facts: null, skipped: 'no-api-key' });
-    if (!req.body?.documentText?.trim()) return res.status(400).json({ error: 'No document.' });
-    const existingFlags = req.body.existingFlags || [];
-    const { facts, rawFlags, truncated } = await llmQuickEnrich(req.body.documentText, { existingFlags });
-    let flags = normalizeLlmFlags(rawFlags, { text: req.body.documentText, pages: req.body.pages || [], existingFlags });
-    flags = applyTierPosture(flags, Number(req.body.tier) === 1 ? 1 : 2);
-    res.json({ flags, facts, truncated });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  try { res.json(await runTask('enrich', req.body || {})); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/scope', requireAuth, async (req, res) => {
-  try {
-    if (!llmAvailable()) return res.json({ scopeItems: [], skipped: 'no-api-key' });
-    if (!req.body?.documentText?.trim()) return res.json({ scopeItems: [] });
-    res.json(await llmExtractScope(req.body.documentText));
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  try { res.json(await runTask('scope', req.body || {})); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/parse-bid', requireAuth, async (req, res) => {
-  try {
-    if (!llmAvailable()) return res.json({ assumptions: {}, skipped: 'no-api-key' });
-    if (!req.body?.bidText?.trim()) return res.status(400).json({ error: 'No bid text.' });
-    res.json({ assumptions: await llmParseBid(req.body.bidText) });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  try { res.json(await runTask('parse-bid', req.body || {})); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/scope-compare', requireAuth, async (req, res) => {
-  try {
-    if (!llmAvailable()) return res.json({ summary: '', redlines: [], skipped: 'no-api-key' });
-    if (!req.body?.bidText?.trim()) return res.json({ summary: '', redlines: [] });
-    res.json(await llmScopeCompare({ contractText: req.body.contractText, bidText: req.body.bidText, scopeItems: req.body.scopeItems }));
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  try { res.json(await runTask('scope-compare', req.body || {})); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/chat', requireAuth, async (req, res) => {
@@ -137,7 +116,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     if (!chatAvailable()) return res.status(400).json({ error: 'Chat needs the Claude API key (set ANTHROPIC_API_KEY).' });
     if (!req.body?.documentText?.trim()) return res.status(400).json({ error: 'No document loaded.' });
     if (!Array.isArray(req.body.messages) || !req.body.messages.length) return res.status(400).json({ error: 'No message.' });
-    res.json(await chatAboutContract(req.body));
+    res.json(await runTask('chat', req.body));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

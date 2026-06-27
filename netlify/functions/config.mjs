@@ -9,6 +9,7 @@ export default async () => {
       googleClientId: process.env.GOOGLE_CLIENT_ID || null,
       googleApiKey: process.env.GOOGLE_API_KEY || null,
       llmConfigured: !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN),
+      background: true, // Netlify: heavy LLM jobs run via the background function + /api/job polling
       authEnabled: authEnabled(),
       authConfig: {
         clientId: !!process.env.GOOGLE_CLIENT_ID,

@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { signSession, COOKIE_NAME } from '../src/auth/session.js';
 
-// Enable auth, ensure NO Anthropic key (so chatAvailable() is false) for these
-// gating tests. The real Claude call needs a key and is exercised manually.
+// The heavy LLM tasks (chat, enrich, scope, scope-compare) run through the
+// Netlify background function, which gates on the session before doing any work.
+// These tests exercise that gate without touching Netlify Blobs (the 401 and
+// task-allowlist checks both return before the blob store is opened).
 function withEnv(fn) {
   const saved = { ...process.env };
   process.env.GOOGLE_CLIENT_ID = 'test-client.apps.googleusercontent.com';
@@ -19,23 +21,31 @@ function withEnv(fn) {
   });
 }
 
-const body = JSON.stringify({ documentText: 'Some contract text', messages: [{ role: 'user', content: 'What is the retainage?' }] });
+const req = (body, cookie) =>
+  new Request('http://x/.netlify/functions/run-background', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
+  });
 
-test('chat function: 401 without a session (auth enabled)', () =>
+test('background function: 401 without a session (auth enabled)', () =>
   withEnv(async () => {
-    const { default: chat } = await import('../netlify/functions/chat.mjs');
-    const res = await chat(new Request('http://x/api/chat', { method: 'POST', body, headers: { 'content-type': 'application/json' } }));
+    const { default: run } = await import('../netlify/functions/run-background.mjs');
+    const res = await run(req({ jobId: 'j1', task: 'chat', payload: { documentText: 'x', messages: [{ role: 'user', content: 'hi' }] } }));
     assert.equal(res.status, 401);
   }));
 
-test('chat function: 400 with a valid session but no API key configured', () =>
+test('background function: 400 for an unknown task even with a valid session', () =>
   withEnv(async () => {
-    const { default: chat } = await import('../netlify/functions/chat.mjs');
+    const { default: run } = await import('../netlify/functions/run-background.mjs');
     const token = await signSession({ email: 'ian@bedrock.works' });
-    const res = await chat(
-      new Request('http://x/api/chat', { method: 'POST', body, headers: { 'content-type': 'application/json', cookie: `${COOKIE_NAME}=${token}` } })
-    );
+    const res = await run(req({ jobId: 'j2', task: 'definitely-not-a-task', payload: {} }, `${COOKIE_NAME}=${token}`));
     assert.equal(res.status, 400);
-    const j = await res.json();
-    assert.match(j.error, /API key/i);
+  }));
+
+test('background function: 400 when jobId or task is missing', () =>
+  withEnv(async () => {
+    const { default: run } = await import('../netlify/functions/run-background.mjs');
+    const res = await run(req({ task: 'chat' }));
+    assert.equal(res.status, 400);
   }));
