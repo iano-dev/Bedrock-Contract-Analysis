@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { analyze } from '../src/engine/analyze.js';
-import { llmAvailable, normalizeLlmFlags, enrichAnalysisWithLlm, llmScopeCompare, buildScopeExcerpt } from '../src/engine/llm.js';
+import { llmAvailable, normalizeLlmFlags, enrichAnalysisWithLlm, llmScopeCompare, llmExtractScope, buildScopeExcerpt } from '../src/engine/llm.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cedar = readFileSync(join(__dirname, 'fixtures', 'cedar-park-pwa.txt'), 'utf8');
@@ -68,6 +68,11 @@ test('buildScopeExcerpt: short text returned unchanged; no markers falls back to
   assert.equal(buildScopeExcerpt('short doc', 30000), 'short doc');
   const noMarker = 'x'.repeat(40000);
   assert.equal(buildScopeExcerpt(noMarker, 1000).length, 1000);
+});
+
+test('llmExtractScope: empty document short-circuits to no scope (no API call)', async () => {
+  assert.deepEqual(await llmExtractScope(''), { scopeItems: [] });
+  assert.deepEqual(await llmExtractScope('   '), { scopeItems: [] });
 });
 
 test('llmScopeCompare: empty quote or contract short-circuits to no redlines (no API call)', async () => {

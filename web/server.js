@@ -8,7 +8,7 @@ import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { analyze } from '../src/engine/analyze.js';
-import { llmQuickEnrich, llmParseBid, llmScopeCompare, normalizeLlmFlags, llmAvailable } from '../src/engine/llm.js';
+import { llmQuickEnrich, llmParseBid, llmScopeCompare, llmExtractScope, normalizeLlmFlags, llmAvailable } from '../src/engine/llm.js';
 import { applyTierPosture } from '../src/engine/tiers.js';
 import { chatAboutContract, chatAvailable } from '../src/engine/chat.js';
 import { buildMarkdown, buildDocx } from '../src/deliverables/index.js';
@@ -93,10 +93,20 @@ app.post('/api/enrich', requireAuth, async (req, res) => {
     if (!llmAvailable()) return res.json({ flags: [], facts: null, skipped: 'no-api-key' });
     if (!req.body?.documentText?.trim()) return res.status(400).json({ error: 'No document.' });
     const existingFlags = req.body.existingFlags || [];
-    const { facts, rawFlags, scopeItems, truncated } = await llmQuickEnrich(req.body.documentText, { existingFlags });
+    const { facts, rawFlags, truncated } = await llmQuickEnrich(req.body.documentText, { existingFlags });
     let flags = normalizeLlmFlags(rawFlags, { text: req.body.documentText, pages: req.body.pages || [], existingFlags });
     flags = applyTierPosture(flags, Number(req.body.tier) === 1 ? 1 : 2);
-    res.json({ flags, facts, scope: scopeItems, truncated });
+    res.json({ flags, facts, truncated });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/scope', requireAuth, async (req, res) => {
+  try {
+    if (!llmAvailable()) return res.json({ scopeItems: [], skipped: 'no-api-key' });
+    if (!req.body?.documentText?.trim()) return res.json({ scopeItems: [] });
+    res.json(await llmExtractScope(req.body.documentText));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

@@ -69,7 +69,13 @@
   .scopehdr .scopesub{font-weight:400;font-size:11px;color:#57606a;}
   .scopelist{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px;}
   .scopelist li{font-size:12.5px;line-height:1.4;color:#1d2530;cursor:pointer;}
-  .scopelist li:hover{color:var(--accent);text-decoration:underline;}
+  .scopelist li .st:hover{color:var(--accent);text-decoration:underline;}
+  .scopelist li.k-exclusion{list-style:none;margin-left:-18px;}
+  .sk{display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.03em;border-radius:3px;padding:1px 5px;margin-right:6px;vertical-align:middle;}
+  .sk.excl{background:#fbe3e3;color:#a01622;}
+  .sk.rate{background:#e3eefb;color:#1a4d8f;}
+  .sk.alt{background:#efe3fb;color:#5a2c8f;}
+  .sk.note{background:#eef0f2;color:#57606a;}
   .redlinebox{margin:10px 12px 0;border:1px solid #e0cda6;background:#fdf8ee;border-radius:8px;padding:9px 12px;}
   .rlhdr{font-weight:600;font-size:13px;color:#6b4e0e;margin-bottom:4px;}
   .rlhdr .rlsub{font-weight:400;font-size:11px;color:#57606a;}
@@ -353,8 +359,9 @@ async function analyze(){
     if(!res.ok) throw new Error(data.error||'Analysis failed');
     state.docText=payload.text; state.pages=payload.pages; state.chat=[];
     openReview(data.analysis,chosen.isPdf);
-    if(body.llm) runEnrich();
+    if(body.llm){ runEnrich(); runScopeExtract(); }
     if(state.bidText.trim()) runScopeCompare();
+    else if(body.llm) showQuoteHint();
   }catch(err){ setStatus(' <span class="err">'+esc(err.message)+'</span>'); $('analyzeBtn').disabled=false; }
 }
 // Extract text from a file (PDF text layer, or plain text) — used for the bid upload.
@@ -480,12 +487,26 @@ function renderComments(a){
 // (quantities, dimensions, zones, cut/core types) you actually price and perform.
 function renderScope(a){
   const box=$('scopebox'); if(!box) return;
-  const items=(a.scope||[]).filter(s=>s&&s.trim());
+  const items=(a.scope||[]).map(s=>typeof s==='string'?{text:s,kind:'other'}:s).filter(s=>s&&s.text&&s.text.trim());
   if(!items.length){ box.innerHTML=''; box.style.display='none'; return; }
   box.style.display='';
+  const tagFor=k=>k==='exclusion'?'<span class="sk excl">EXCLUDED</span>':k==='rate'?'<span class="sk rate">rate</span>':k==='alternate'?'<span class="sk alt">alt</span>':k==='clarification'?'<span class="sk note">note</span>':'';
   box.innerHTML='<div class="scopehdr">📋 Scope of your work <span class="scopesub">(exact, from the contract — click to locate)</span></div>'+
-    '<ul class="scopelist">'+items.map(s=>`<li>${esc(s)}</li>`).join('')+'</ul>';
-  box.querySelectorAll('.scopelist li').forEach((li,i)=>{ li.onclick=()=>locateQuote(items[i]); });
+    '<ul class="scopelist">'+items.map(s=>`<li class="k-${esc(s.kind||'other')}">${tagFor(s.kind)}<span class="st">${esc(s.text)}</span></li>`).join('')+'</ul>';
+  box.querySelectorAll('.scopelist li').forEach((li,i)=>{ li.onclick=()=>locateQuote(items[i].text); });
+}
+// Dedicated, exhaustive scope extraction — its own call so the long nested
+// Inclusions/Clarifications/Exclusions/rates list isn't summarized away.
+async function runScopeExtract(){
+  const a=state.analysis;
+  const box=$('scopebox'); if(box){ box.style.display=''; box.innerHTML='<div class="scopehdr">📋 Scope of your work <span class="scopesub">extracting…</span></div>'; }
+  try{
+    const r=await fetch('/api/scope',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({documentText:state.docText})});
+    if(!r.ok) throw new Error('scope failed');
+    const d=await r.json();
+    if(d.skipped){ if(box){ box.style.display='none'; box.innerHTML=''; } return; }
+    a.scope=d.scopeItems||[]; renderScope(a);
+  }catch(e){ if(box){ box.style.display='none'; box.innerHTML=''; } }
 }
 // When a quote/bid was uploaded, compare its scope to the contract's and draft
 // redline language to send back to the GC. Best-effort, runs after the review
@@ -501,7 +522,14 @@ async function runScopeCompare(){
     const d=await r.json();
     if(d.skipped){ if(box){box.style.display='none';box.innerHTML='';} return; }
     a.scopeCompare=d; renderRedlines(a);
-  }catch(e){ if(box){ box.style.display='none'; box.innerHTML=''; } }
+  }catch(e){ if(box){ box.style.display=''; box.innerHTML='<div class="rlhdr">🧾 Quote vs. contract scope</div><div class="rlsummary">Couldn’t compare the quote this time — the contract analysis itself is unaffected. Re-run to try again.</div>'; } }
+}
+// No quote was uploaded — tell the user how to get the comparison rather than
+// leaving the section silently absent.
+function showQuoteHint(){
+  const box=$('redlinebox'); if(!box) return;
+  box.style.display='';
+  box.innerHTML='<div class="rlhdr">🧾 Quote vs. contract scope</div><div class="rlsummary">No quote uploaded. To compare your bid against the contract scope and get suggested redline language to send the GC, start a <b>New analysis</b> and add your bid in the <b>“Optional: upload your bid / estimate”</b> box, then re-run.</div>';
 }
 function renderRedlines(a){
   const box=$('redlinebox'); if(!box) return;
@@ -555,7 +583,6 @@ async function runEnrich(){
       a.flags=[...a.flags,...d.flags].sort((x,y)=>x.category.localeCompare(y.category)||rank[x.severity]-rank[y.severity]);
     }
     if(d.facts) fillFacts(a.metadata,d.facts);
-    if(d.scope&&d.scope.length){ a.scope=d.scope; renderScope(a); }
     a.llm={used:true,addedFlags:(d.flags||[]).length};
     recountSummary(a); renderSummary(a); renderComments(a); renderExtra(a);
   }catch(e){ a.llm={used:false,reason:'AI pass unavailable for this document'}; renderSummary(a); }
