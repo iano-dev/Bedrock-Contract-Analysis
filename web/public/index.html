@@ -68,13 +68,14 @@
   .summary{padding:12px 14px;border-bottom:1px solid var(--line);background:var(--panel);flex:0 0 auto;}
   .checklist{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:7px 14px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line);background:#fbfcfd;}
   .checklist .ckhdr{font-size:12px;font-weight:600;color:#57606a;}
-  .ckunit{display:flex;align-items:center;gap:6px;font-size:12.5px;}
-  .ckunit label{display:flex;align-items:center;gap:5px;cursor:pointer;margin:0;}
-  .ckunit input{width:15px;height:15px;cursor:pointer;}
+  .ckunit{display:flex;align-items:center;gap:6px;font-size:12.5px;border-radius:6px;padding:2px 4px;}
+  .ckunit input{width:15px;height:15px;margin:0;pointer-events:none;accent-color:#1a7a33;}
   .ckunit .cklabel{font-weight:600;color:var(--ink);}
+  .ckunit:not(.det) .cklabel{color:#9aa3ae;font-weight:500;}
   .ckstatus{font-size:10.5px;font-weight:600;border-radius:4px;padding:1px 6px;white-space:nowrap;}
-  .ckunit.det .ckstatus{background:#e3f1e6;color:#1a7a33;cursor:pointer;}
-  .ckunit.det .ckstatus:hover{background:#cfe9d5;}
+  .ckunit.det{cursor:pointer;}
+  .ckunit.det:hover{background:#eef6f0;}
+  .ckunit.det .ckstatus{background:#e3f1e6;color:#1a7a33;}
   .ckunit:not(.det) .ckstatus{background:#eef0f2;color:#9aa3ae;}
   #findingsView{flex:1 1 58%;overflow:auto;min-height:80px;}
   /* collapsible cards: a chevron in the header toggles the body */
@@ -625,17 +626,15 @@ function checklistItems(a){
 function renderChecklist(a){
   const box=$('checklist'); if(!box) return;
   if(!a||!a.flags){ box.style.display='none'; return; }
-  a.checklist=a.checklist||{};
   const items=checklistItems(a);
   box.style.display='';
-  box.innerHTML='<span class="ckhdr">Review:</span>'+items.map(it=>{
+  box.innerHTML='<span class="ckhdr">In this contract:</span>'+items.map(it=>{
     const status=it.detected
-      ? `<span class="ckstatus" data-k="${it.key}" title="Jump to it in the document">● in contract${it.detail?(' — '+esc(it.detail)):''} ↗</span>`
-      : '<span class="ckstatus">not detected</span>';
-    return `<span class="ckunit ${it.detected?'det':''}"><label><input type="checkbox" data-k="${it.key}" ${a.checklist[it.key]?'checked':''}><span class="cklabel">${esc(it.label)}</span></label>${status}</span>`;
+      ? `<span class="ckstatus">found${it.detail?(' — '+esc(it.detail)):''} ↗</span>`
+      : '<span class="ckstatus">not found</span>';
+    return `<span class="ckunit ${it.detected?'det':''}" data-k="${it.key}"${it.detected?' title="Jump to it in the document"':''}><input type="checkbox" ${it.detected?'checked':''} tabindex="-1" aria-hidden="true"><span class="cklabel">${esc(it.label)}</span>${status}</span>`;
   }).join('');
-  box.querySelectorAll('input[type=checkbox]').forEach(cb=>{ cb.onchange=()=>{ a.checklist[cb.dataset.k]=cb.checked; saveSession(); }; });
-  box.querySelectorAll('.ckunit.det .ckstatus').forEach(s=>{ s.onclick=()=>{ const it=items.find(x=>x.key===s.dataset.k); if(it) checklistJump(it); }; });
+  box.querySelectorAll('.ckunit.det').forEach(u=>{ u.onclick=()=>{ const it=items.find(x=>x.key===u.dataset.k); if(it) checklistJump(it); }; });
 }
 function checklistJump(it){
   if(it.flag){ const loc=(it.flag.locations||[])[0]; if(loc&&loc.page){ locateInDoc(loc.page, loc.quote||loc.clauseText||''); return; } }
