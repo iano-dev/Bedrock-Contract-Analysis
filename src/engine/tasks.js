@@ -14,10 +14,10 @@ export async function runTask(name, p = {}) {
     case 'enrich': {
       if (!llmAvailable()) return { flags: [], facts: null, skipped: 'no-api-key' };
       const existingFlags = p.existingFlags || [];
-      const { facts, rawFlags, truncated } = await llmQuickEnrich(p.documentText, { existingFlags });
+      const { facts, rawFlags, features, truncated } = await llmQuickEnrich(p.documentText, { existingFlags });
       let flags = normalizeLlmFlags(rawFlags, { text: p.documentText, pages: p.pages || [], existingFlags });
       flags = applyTierPosture(flags, Number(p.tier) === 1 ? 1 : 2);
-      return { flags, facts, truncated };
+      return { flags, facts, features, truncated };
     }
     case 'scope': {
       if (!llmAvailable()) return { scopeItems: [], skipped: 'no-api-key' };

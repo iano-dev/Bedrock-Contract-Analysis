@@ -77,6 +77,8 @@
   .ckunit.det:hover{background:#eef6f0;}
   .ckunit.det .ckstatus{background:#e3f1e6;color:#1a7a33;}
   .ckunit:not(.det) .ckstatus{background:#eef0f2;color:#9aa3ae;}
+  .ckstatus.ckunclear{background:#fdf3e0;color:#9a6a12;}
+  .ckpending{font-size:11.5px;color:#8a93a0;font-style:italic;}
   #findingsView{flex:1 1 58%;overflow:auto;min-height:80px;}
   /* collapsible cards: a chevron in the header toggles the body */
   .chev{display:inline-block;width:12px;font-size:10px;color:#8a93a0;transition:transform .15s;cursor:pointer;user-select:none;}
@@ -472,6 +474,7 @@ async function analyze(){
     const data=await res.json();
     if(!res.ok) throw new Error(data.error||'Analysis failed');
     state.docText=payload.text; state.pages=payload.pages; state.chat=[];
+    if(body.llm) data.analysis.llm={pending:true}; // checklist shows "checking…" until the AI pass returns authoritative features
     openReview(data.analysis,chosen.isPdf);
     // runScopeExtract chains the quote comparison once the scope list is ready.
     if(body.llm){ runEnrich(); runScopeExtract(); }
@@ -601,44 +604,55 @@ function renderComments(a){
 // The exact scope of OUR work, pulled verbatim by the Claude pass. Distinct from
 // the generic "furnish all labor…" boilerplate — these are the measurable items
 // (quantities, dimensions, zones, cut/core types) you actually price and perform.
-// Top-of-findings review checklist. Each box is a manual tick (saved with the
-// session) annotated with whether the analyzer found that item in THIS contract,
-// with click-to-jump to the clause. Detection is driven off the rules/AI flags
-// and metadata, with a document-text fallback.
+// Top-of-findings indicators: does THIS contract actually impose CCIP/OCIP,
+// retention, and certified payroll? Authoritative source is the Claude pass
+// (a.features), which reads checkbox state and "Not Applicable" fields rather
+// than just matching words. A conservative rules fallback covers the no-AI case.
 function checklistItems(a){
+  const labels={ccip:'CCIP / OCIP',retention:'Retention',payroll:'Certified payroll'};
+  const f=a.features;
+  if(f){
+    const map={ccip:f.ccipOcip,retention:f.retention,payroll:f.certifiedPayroll};
+    return Object.keys(labels).map(key=>{
+      const ft=map[key]||{};
+      return { key, label:labels[key], detected:ft.applies==='yes', unclear:ft.applies==='unclear', basis:ft.basis||null };
+    });
+  }
+  // Fallback (no AI pass): conservative rules-based guess.
   const flags=a.flags||[];
-  const find=(re)=>flags.find(f=>re.test(f.id||'')||re.test(f.title||''));
-  const docHas=(re)=>re.test(state.docText||'');
-  const orcap=flags.find(f=>f.id==='OR-retainage-cap');
-  const ccipFlag=find(/ocip|ccip|wrap/i);
-  const retFlag=orcap||find(/retain/i);
-  const payFlag=find(/prevailing|certified payroll|davis/i);
-  const pw=!!(a.metadata&&a.metadata.prevailingWage);
+  const find=(re)=>flags.find(x=>re.test(x.id||'')||re.test(x.title||''));
+  const orcap=flags.find(x=>x.id==='OR-retainage-cap');
+  const ccipFlag=find(/ocip|ccip|wrap/i), retFlag=orcap||find(/retain/i), payFlag=find(/prevailing|certified payroll|davis/i);
+  const notApplicablePayroll=/davis\s*bacon[^\n]{0,40}not\s*applicable|prevailing wage[^\n]{0,30}not\s*applicable/i.test(state.docText||'');
   return [
-    { key:'ccip', label:'CCIP / OCIP', flag:ccipFlag, re:/\bO?CIP\b|wrap[\s-]?up|controlled insurance program/i,
-      detected:!!ccipFlag||docHas(/\bO?CIP\b|wrap[\s-]?up|controlled insurance program/i) },
-    { key:'retention', label:'Retention', flag:retFlag, re:/retain\w*/i, detail:orcap?'exceeds OR 5% cap':'',
-      detected:!!retFlag||docHas(/retain\w*/i) },
-    { key:'payroll', label:'Certified payroll', flag:payFlag, re:/certified payroll|prevailing wage|davis[\s-]?bacon|public works/i,
-      detected:pw||!!payFlag||docHas(/certified payroll|prevailing wage|davis[\s-]?bacon/i) },
+    { key:'ccip', label:labels.ccip, detected:!!ccipFlag, re:/\bO?CIP\b|wrap[\s-]?up|controlled insurance program/i },
+    { key:'retention', label:labels.retention, detected:!!retFlag, detail:orcap?'exceeds OR 5% cap':'', re:/retain\w*/i },
+    { key:'payroll', label:labels.payroll, detected:(!!payFlag||!!(a.metadata&&a.metadata.prevailingWage))&&!notApplicablePayroll, re:/certified payroll|prevailing wage|davis[\s-]?bacon/i },
   ];
 }
 function renderChecklist(a){
   const box=$('checklist'); if(!box) return;
   if(!a||!a.flags){ box.style.display='none'; return; }
-  const items=checklistItems(a);
   box.style.display='';
+  // While the Claude pass is running, show a pending state instead of the
+  // unreliable word-match, since the AI result is authoritative.
+  if(!a.features && a.llm && a.llm.pending){
+    box.innerHTML='<span class="ckhdr">In this contract:</span><span class="ckpending">checking CCIP/OCIP · Retention · Certified payroll…</span>';
+    return;
+  }
+  const items=checklistItems(a);
   box.innerHTML='<span class="ckhdr">In this contract:</span>'+items.map(it=>{
     const status=it.detected
       ? `<span class="ckstatus">found${it.detail?(' — '+esc(it.detail)):''} ↗</span>`
-      : '<span class="ckstatus">not found</span>';
+      : (it.unclear?'<span class="ckstatus ckunclear">unclear</span>':'<span class="ckstatus">not found</span>');
     return `<span class="ckunit ${it.detected?'det':''}" data-k="${it.key}"${it.detected?' title="Jump to it in the document"':''}><input type="checkbox" ${it.detected?'checked':''} tabindex="-1" aria-hidden="true"><span class="cklabel">${esc(it.label)}</span>${status}</span>`;
   }).join('');
   box.querySelectorAll('.ckunit.det').forEach(u=>{ u.onclick=()=>{ const it=items.find(x=>x.key===u.dataset.k); if(it) checklistJump(it); }; });
 }
 function checklistJump(it){
+  if(it.basis){ locateQuote(it.basis); return; }
   if(it.flag){ const loc=(it.flag.locations||[])[0]; if(loc&&loc.page){ locateInDoc(loc.page, loc.quote||loc.clauseText||''); return; } }
-  if(!state.pdf||!state.docText) return;
+  if(!state.pdf||!state.docText||!it.re) return;
   const m=state.docText.match(it.re); if(!m) return;
   let page=1; const idx=m.index;
   for(const p of state.pages){ if(idx>=p.start&&idx<=p.end){ page=p.page; break; } }
@@ -789,15 +803,16 @@ async function runEnrich(){
       documentText:state.docText, pages:state.pages, tier:a.tier,
       existingFlags:a.flags.map(f=>({category:f.category,title:f.title})),
     });
-    if(d.skipped){ a.llm={used:false,reason:'no API key'}; renderSummary(a); return; }
+    if(d.skipped){ a.llm={used:false,reason:'no API key'}; renderSummary(a); renderChecklist(a); return; }
     if(d.flags&&d.flags.length){
       const rank={HIGH:0,MEDIUM:1,LOW:2};
       a.flags=[...a.flags,...d.flags].sort((x,y)=>x.category.localeCompare(y.category)||rank[x.severity]-rank[y.severity]);
     }
     if(d.facts) fillFacts(a.metadata,d.facts);
+    if(d.features) a.features=d.features;
     a.llm={used:true,addedFlags:(d.flags||[]).length};
     recountSummary(a); renderSummary(a); renderChecklist(a); renderComments(a); renderExtra(a); saveSession();
-  }catch(e){ a.llm={used:false,reason:'AI pass unavailable for this document'}; renderSummary(a); }
+  }catch(e){ a.llm={used:false,reason:'AI pass unavailable for this document'}; renderSummary(a); renderChecklist(a); }
 }
 function fillFacts(m,f){
   const set=(k,v)=>{ if((m[k]==null||m[k]==='')&&v) m[k]=v; };

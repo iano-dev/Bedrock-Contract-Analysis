@@ -196,8 +196,21 @@ export function buildScopeExcerpt(text, maxChars) {
   return out.slice(0, maxChars);
 }
 
+// Whether the contract ACTUALLY imposes a given requirement — not merely whether
+// the words appear. These subcontracts use checkbox requirement lists and
+// "Not Applicable" fields, so applicability must be read, not pattern-matched.
+const FeatureSchema = z.object({
+  applies: z.enum(['yes', 'no', 'unclear']).describe('Does the contract actually impose/require this?'),
+  basis: z.string().nullable().describe('A SHORT verbatim quote of the governing line (so it can be located in the document), or null if it does not apply.'),
+});
+
 const EnrichSchema = z.object({
   facts: MetadataSchema,
+  features: z.object({
+    ccipOcip: FeatureSchema.describe('Owner/Contractor-Controlled Insurance Program (OCIP/CCIP/wrap-up). "yes" ONLY if the project is actually enrolled in a wrap-up program — not merely because ordinary insurance/additional-insured is required.'),
+    retention: FeatureSchema.describe('Retainage/retention withheld from progress payments. "yes" if the contract withholds a retainage percentage.'),
+    certifiedPayroll: FeatureSchema.describe('Certified payroll / prevailing-wage / Davis-Bacon compliance actually REQUIRED of the subcontractor. "yes" ONLY when it is truly required — e.g. a CHECKED "Certified Payroll Reports" box, a prevailing-wage/public-works designation, or a Davis-Bacon/L&I number that is a real value. If such items are listed but UNCHECKED, or the wage-determination/L&I number says "Not Applicable", answer "no".'),
+  }),
   flags: z.array(FlagSchema),
 });
 
@@ -224,13 +237,13 @@ export async function llmQuickEnrich(documentText, { existingFlags = [] } = {}) 
     messages: [
       {
         role: 'user',
-        content: `${FLAG_INSTRUCTIONS}\n\nAlso extract the contract facts (type, parties, value, scope, prevailing wage).\n\nAlready-detected risks (do not repeat):\n${existingList}\n\n--- CONTRACT (excerpt) ---\n${doc}\n---`,
+        content: `${FLAG_INSTRUCTIONS}\n\nAlso extract the contract facts (type, parties, value, scope, prevailing wage).\n\nAlso determine the contract FEATURES — whether the contract ACTUALLY imposes: (1) an OCIP/CCIP wrap-up insurance program, (2) retainage/retention, and (3) certified-payroll / prevailing-wage compliance. IMPORTANT: these subcontracts use CHECKBOX requirement lists (a checked box = required, an empty/unchecked box = NOT required) and "Not Applicable" fields. Do NOT answer "yes" just because the words appear — an item like "Certified Payroll Reports" or "Intent to Pay Prevailing Wages" may be LISTED but UNCHECKED, or a "Davis Bacon Wage Determination Number" / "Washington L&I Intent Number" may say "Not Applicable". In those cases answer "no". Quote the exact governing line verbatim in "basis" so it can be located.\n\nAlready-detected risks (do not repeat):\n${existingList}\n\n--- CONTRACT (excerpt) ---\n${doc}\n---`,
       },
     ],
-    output_config: { format: zodOutputFormat(EnrichSchema, 'enrichment'), effort: 'low' },
+    output_config: { format: zodOutputFormat(EnrichSchema, 'enrichment'), effort: 'medium' },
   });
-  const out = res.parsed_output || { facts: null, flags: [] };
-  return { facts: out.facts || null, rawFlags: out.flags || [], truncated };
+  const out = res.parsed_output || { facts: null, flags: [], features: null };
+  return { facts: out.facts || null, rawFlags: out.flags || [], features: out.features || null, truncated };
 }
 
 // Dedicated, exhaustive scope extraction. Scope on these subcontracts is a long,
