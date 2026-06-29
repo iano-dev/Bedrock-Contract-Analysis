@@ -622,11 +622,13 @@ function checklistItems(a){
   const flags=a.flags||[];
   const find=(re)=>flags.find(x=>re.test(x.id||'')||re.test(x.title||''));
   const orcap=flags.find(x=>x.id==='OR-retainage-cap');
-  const ccipFlag=find(/ocip|ccip|wrap/i), retFlag=orcap||find(/retain/i), payFlag=find(/prevailing|certified payroll|davis/i);
+  const ccipFlag=find(/ocip|ccip|wrap/i), payFlag=find(/prevailing|certified payroll|davis/i);
+  // Retainage = a percentage held back from payments, not just the word "retain".
+  const retainagePct=/\bretain(age|tion)?\b[^.\n]{0,40}?\d{1,2}(\.\d+)?\s?%|\d{1,2}(\.\d+)?\s?%[^.\n]{0,40}?\bretain(age|tion)?\b/i;
   const notApplicablePayroll=/davis\s*bacon[^\n]{0,40}not\s*applicable|prevailing wage[^\n]{0,30}not\s*applicable/i.test(state.docText||'');
   return [
     { key:'ccip', label:labels.ccip, detected:!!ccipFlag, re:/\bO?CIP\b|wrap[\s-]?up|controlled insurance program/i },
-    { key:'retention', label:labels.retention, detected:!!retFlag, detail:orcap?'exceeds OR 5% cap':'', re:/retain\w*/i },
+    { key:'retention', label:labels.retention, detected:!!orcap||retainagePct.test(state.docText||''), detail:orcap?'exceeds OR 5% cap':'', re:retainagePct },
     { key:'payroll', label:labels.payroll, detected:(!!payFlag||!!(a.metadata&&a.metadata.prevailingWage))&&!notApplicablePayroll, re:/certified payroll|prevailing wage|davis[\s-]?bacon/i },
   ];
 }
