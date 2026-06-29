@@ -1,0 +1,535 @@
+// LLM-assisted extraction pass (Claude / Anthropic SDK).
+//
+// The rules engine in scan.js is deterministic and fast but pattern-bound. This
+// pass uses Claude to (a) extract contract facts more robustly than regex and
+// (b) surface risk clauses the taxonomy's patterns missed — paraphrased
+// language, unusual structures, scope hidden in prose. It is OPTIONAL: gated on
+// an API key, and the analyzer falls back to the pure rules engine without one.
+//
+// Model: claude-opus-4-8. Structured outputs via messages.parse + zod guarantee
+// a valid shape. The stable doctrine/system prompt is prompt-cached so repeated
+// analyses and multi-chunk documents reuse the prefix cheaply.
+
+import Anthropic from '@anthropic-ai/sdk';
+import { z } from 'zod';
+import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
+import { CATEGORIES } from '../data/patterns.js';
+import { offsetToPage } from '../extract/pages.js';
+import { applyTierPosture } from './tiers.js';
+import { buildSummary } from './analyze.js';
+
+const MODEL = 'claude-opus-4-8';
+const CHUNK_CHARS = 60000; // ~15k tokens per chunk
+const CHUNK_OVERLAP = 2000;
+const MAX_CHUNKS = 8; // bound cost; we log if a document is truncated
+
+export function llmAvailable() {
+  return !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
+}
+
+function client() {
+  return new Anthropic(); // resolves ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / profile
+}
+
+// ---- Schemas ---------------------------------------------------------------
+
+const MetadataSchema = z.object({
+  contractType: z.string().describe('e.g. "AGC-standard subcontract", "Public Works Agreement (PWA)"'),
+  project: z.string().nullable().describe('Project name, or null if not stated'),
+  contractor: z.string().nullable().describe('General contractor / counterparty hiring Bedrock'),
+  subcontractor: z.string().nullable().describe('The subcontractor (usually Bedrock)'),
+  contractValue: z.string().nullable().describe('Subcontract sum as written, e.g. "$44,580", or null'),
+  prevailingWage: z.boolean().describe('True if this is a prevailing-wage / public works job'),
+  scopeSummary: z.string().nullable().describe('One- or two-sentence summary of Bedrock\'s scope of work'),
+});
+
+const FlagSchema = z.object({
+  category: z.enum(['A', 'B', 'C', 'D', 'E', 'F']).describe('Taxonomy category'),
+  title: z.string().describe('Short title of the risk'),
+  clauseText: z.string().describe('Exact quoted text of the clause from the contract (verbatim)'),
+  severity: z.enum(['HIGH', 'MEDIUM', 'LOW']),
+  confidence: z.enum(['firm', 'contested']).describe('"contested" if the position needs internal verification before asserting'),
+  attorneyReview: z.boolean().describe('True for prevailing-wage premium, indemnity enforceability, or lien questions'),
+  scopeSchedule: z.boolean().describe('True if this is a scope or schedule item (the Tier-1 negotiation focus)'),
+  why: z.string().describe('Why it matters to Bedrock, grounded in the clause'),
+  action: z.string().describe('Recommended action'),
+});
+
+const FlagsSchema = z.object({
+  flags: z.array(FlagSchema),
+});
+
+// ---- Prompts ---------------------------------------------------------------
+
+const DOCTRINE = `You are a contract-analysis assistant for Bedrock Concrete Cutting / Bedrock Commercial Concrete, a commercial concrete SUBCONTRACTOR in Oregon and Washington (flat/wall sawing, core drilling, selective demolition, trenching). Contracts come TO Bedrock from general contractors or higher-tier subs. Bedrock is almost always the lowest tier and rarely gets to redline.
+
+You produce contract INTERPRETATION, not legal advice. Flag attorney review for prevailing-wage premium claims, indemnity enforceability, and lien rights. Default to flagging more, not less. Never present a contested position as settled.
+
+Key doctrine:
+- Means and methods (which saw, what sequence) belong to Bedrock as an independent contractor. A clause mandating a specific method/equipment is an intrusion and a possible change-order basis.
+- Re-sequencing within priced scope = coordinate, no cost claim. Material cost-shifting (compression, added mobilizations, fragmentation into multiple trips, straight-time work pushed into a newly created premium window) = a change-order event.
+- Premium-time absorption language ("included all costs and premium time required to perform the work and the project schedule") quietly shifts Saturday/extended-week premium onto Bedrock; treat as CONTESTED until the bid's straight-time vs. premium basis is confirmed.
+- Documents incorporated by reference (MSA, prime contract, CSI MasterFormat spec sections like "02 41 00") bind Bedrock even though their text isn't in the PDF — sign nothing until retrieved.
+- Bedrock is bound to the schedule as it existed at contract formation; a generic "check Procore/Smartsheets for updates" clause is notification, not consent to unlimited cost-shifting.
+
+Taxonomy categories:
+A — Schedule & premium time (highest priority): post-signing schedule changes, premium-time absorption, extended work weeks, mandatory OT at no comp, liquidated damages, weather-day limits, mobilization/standby terms.
+B — Financial / cash flow: pay-if-paid vs pay-when-paid, retainage, invoice mechanics, close-out payment traps, lien-waiver chains.
+C — Legal / risk allocation: broad indemnity, incorporation by reference, insurance/additional-insured, OCIP/wrap-up.
+D — Operational / means-and-methods: mandated equipment/method, outcome constraints that drive method (no-overcut/polished slab), dust/slurry/cleanup, on-site supervision, hazmat stop-work.
+E — Administrative / preconditions: change-order process, submittals window, executed-subcontract/COI preconditions, background checks/onboarding.
+F — Incorporated documents (handled separately).`;
+
+const FLAG_INSTRUCTIONS = `From the contract excerpt below, identify risk clauses relevant to Bedrock per the taxonomy. For each, quote the clause text VERBATIM (so it can be located in the document), assign the category, severity (HIGH/MEDIUM/LOW), confidence, attorneyReview, and scopeSchedule, and explain why it matters plus the recommended action.
+
+Rules:
+- Only report clauses actually present in this excerpt. Do not invent or generalize.
+- Prefer precision: quote the specific sentence, not a whole article.
+- A list of risks already detected by a separate pattern engine is provided — focus on clauses that engine likely MISSED (paraphrased language, unusual structures, scope buried in prose). Do not re-report a clause already in that list.
+- If nothing new is present, return an empty flags array.`;
+
+function systemBlocks() {
+  return [{ type: 'text', text: DOCTRINE, cache_control: { type: 'ephemeral' } }];
+}
+
+function chunkText(text) {
+  const chunks = [];
+  for (let i = 0; i < text.length && chunks.length < MAX_CHUNKS; i += CHUNK_CHARS - CHUNK_OVERLAP) {
+    chunks.push({ start: i, text: text.slice(i, i + CHUNK_CHARS) });
+  }
+  const covered = chunks.length ? Math.min(text.length, chunks[chunks.length - 1].start + CHUNK_CHARS) : 0;
+  return { chunks, truncated: covered < text.length, coveredChars: covered };
+}
+
+// ---- Public API ------------------------------------------------------------
+
+export async function llmExtractMetadata(text, { logger } = {}) {
+  const c = client();
+  const excerpt = text.slice(0, CHUNK_CHARS); // parties/value/scope live up front
+  if (logger) logger('LLM: extracting contract facts…');
+  const res = await c.messages.parse({
+    model: MODEL,
+    max_tokens: 2000,
+    system: systemBlocks(),
+    messages: [
+      {
+        role: 'user',
+        content: `Extract the contract facts from this subcontract excerpt.\n\n---\n${excerpt}\n---`,
+      },
+    ],
+    output_config: { format: zodOutputFormat(MetadataSchema, 'contract_facts') },
+  });
+  return res.parsed_output || null;
+}
+
+export async function llmFindClauses(text, { existingFlags = [], logger } = {}) {
+  const c = client();
+  const { chunks, truncated, coveredChars } = chunkText(text);
+  const existingList = existingFlags
+    .map((f) => `- [${f.category}] ${f.title}`)
+    .join('\n') || '(none)';
+
+  const all = [];
+  for (let idx = 0; idx < chunks.length; idx++) {
+    const ch = chunks[idx];
+    if (logger) logger(`LLM: scanning excerpt ${idx + 1}/${chunks.length} for missed clauses…`);
+    const res = await c.messages.parse({
+      model: MODEL,
+      max_tokens: 8000,
+      system: systemBlocks(),
+      messages: [
+        {
+          role: 'user',
+          content: `${FLAG_INSTRUCTIONS}\n\nAlready-detected risks (do not repeat):\n${existingList}\n\n--- CONTRACT EXCERPT (chars ${ch.start}–${ch.start + ch.text.length}) ---\n${ch.text}\n---`,
+        },
+      ],
+      output_config: { format: zodOutputFormat(FlagsSchema, 'risk_flags') },
+    });
+    const out = res.parsed_output;
+    if (out?.flags?.length) all.push(...out.flags);
+  }
+
+  return { flags: all, truncated, coveredChars, totalChars: text.length, chunkCount: chunks.length };
+}
+
+// Bounded, single-call enrichment for the serverless web path: extract contract
+// facts AND find missed clauses in ONE Claude call over a capped excerpt, at low
+// effort, so it returns well within a serverless function's time limit. Returns
+// raw facts + flags; the caller normalizes and merges. (The chunked, full-document
+// enrichAnalysisWithLlm above is used by the CLI/library where there's no timeout.)
+const ENRICH_MAX_CHARS = 36000; // ~9k tokens — one fast call
+
+// The scope of work is often deep inside a long contract (e.g. an AGC 600's
+// "Article 16 — Special Provisions / Scope of Work" can sit on page 14 of 247).
+// Blindly taking the first N characters misses it entirely, so build an excerpt
+// CENTERED on the scope/inclusions/exclusions language instead. Returns windows
+// around every scope marker, merged and capped — or the head of the document if
+// no marker is found.
+const SCOPE_EXTRACT_MAX = 36000; // chars of scope-centered excerpt for extraction
+const SCOPE_MARKERS =
+  /\b(scope of (?:work|services|the work)|description of (?:the )?work|work to be performed|the following scope|statement of work|special provisions|\binclusions?\b|\bexclusions?\b|\bexcludes?\b|\bclarifications?\b|assumptions and (?:qualifications|exclusions)|qualifications and (?:assumptions|exclusions)|scope:)\b/gi;
+
+export function buildScopeExcerpt(text, maxChars) {
+  if (!text) return '';
+  if (text.length <= maxChars) return text;
+  SCOPE_MARKERS.lastIndex = 0;
+  const hits = [];
+  let m;
+  while ((m = SCOPE_MARKERS.exec(text)) !== null && hits.length < 60) hits.push(m.index);
+  if (!hits.length) return text.slice(0, maxChars);
+  // Enumerated scope lists (Inclusions/Clarifications 1–15) often run onto the
+  // next page, so reach well past each marker to keep the list intact.
+  const BEFORE = 800;
+  const AFTER = 9000;
+  const windows = hits.map((i) => [Math.max(0, i - BEFORE), Math.min(text.length, i + AFTER)]).sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const w of windows) {
+    const last = merged[merged.length - 1];
+    if (last && w[0] <= last[1] + 400) last[1] = Math.max(last[1], w[1]);
+    else merged.push([...w]);
+  }
+  let out = '';
+  for (const [s, e] of merged) {
+    if (out.length >= maxChars) break;
+    out += (out ? '\n\n[…]\n\n' : '') + text.slice(s, e);
+  }
+  return out.slice(0, maxChars);
+}
+
+// Whether the contract ACTUALLY imposes a given requirement — not merely whether
+// the words appear. These subcontracts use checkbox requirement lists and
+// "Not Applicable" fields, so applicability must be read, not pattern-matched.
+const FeatureSchema = z.object({
+  applies: z.enum(['yes', 'no', 'unclear']).describe('Does the contract actually impose/require this?'),
+  basis: z.string().nullable().describe('A SHORT verbatim quote of the governing line (so it can be located in the document), or null if it does not apply.'),
+});
+
+const EnrichSchema = z.object({
+  facts: MetadataSchema,
+  features: z.object({
+    ccipOcip: FeatureSchema.describe('Owner/Contractor-Controlled Insurance Program (OCIP/CCIP/wrap-up). "yes" ONLY if the project is actually enrolled in a wrap-up program — not merely because ordinary insurance/additional-insured is required.'),
+    retention: FeatureSchema.describe('RETAINAGE specifically — a defined percentage withheld from EACH progress payment and released at/after completion (e.g. "5% retainage", "10% retention shall be withheld from each payment until..."). Answer "yes" ONLY for such a held-back percentage on payments. Answer "no" for everything else that uses the word, including: general rights to WITHHOLD or retain payment for defective work, backcharges, disputes, or claims; setoff; "retention of records"; "retain the right to…"; or lien-retention language. No retainage percentage on progress payments → "no".'),
+    certifiedPayroll: FeatureSchema.describe('Certified payroll / prevailing-wage / Davis-Bacon compliance actually REQUIRED of the subcontractor. "yes" ONLY when it is truly required — e.g. a CHECKED "Certified Payroll Reports" box, a prevailing-wage/public-works designation, or a Davis-Bacon/L&I number that is a real value. If such items are listed but UNCHECKED, or the wage-determination/L&I number says "Not Applicable", answer "no".'),
+  }),
+  flags: z.array(FlagSchema),
+});
+
+export async function llmQuickEnrich(documentText, { existingFlags = [] } = {}) {
+  const c = client();
+  const full = documentText || '';
+  const truncated = full.length > ENRICH_MAX_CHARS;
+  let doc;
+  if (!truncated) {
+    doc = full;
+  } else {
+    // Facts and early flags live up front; the scope section may be far deeper.
+    // Send the head for facts, then a scope-centered excerpt from the remainder.
+    const FRONT = 24000;
+    const front = full.slice(0, FRONT);
+    const scope = buildScopeExcerpt(full.slice(FRONT), ENRICH_MAX_CHARS - FRONT - 80);
+    doc = scope ? `${front}\n\n[… excerpt continues — scope of work section …]\n\n${scope}` : front;
+  }
+  const existingList = existingFlags.map((f) => `- [${f.category}] ${f.title}`).join('\n') || '(none)';
+  const res = await c.messages.parse({
+    model: MODEL,
+    max_tokens: 4000,
+    system: systemBlocks(),
+    messages: [
+      {
+        role: 'user',
+        content: `${FLAG_INSTRUCTIONS}\n\nAlso extract the contract facts (type, parties, value, scope, prevailing wage).\n\nAlso determine the contract FEATURES — whether the contract ACTUALLY imposes: (1) an OCIP/CCIP wrap-up insurance program, (2) RETAINAGE — a percentage withheld from each progress payment and released at/after completion (this is NOT the same as a general right to withhold/retain payment for defects, backcharges, disputes, or claims, and NOT "retention of records" — answer "yes" only for a true retainage percentage on payments), and (3) certified-payroll / prevailing-wage compliance. IMPORTANT: these subcontracts use CHECKBOX requirement lists (a checked box = required, an empty/unchecked box = NOT required) and "Not Applicable" fields. Do NOT answer "yes" just because the words appear — an item like "Certified Payroll Reports" or "Intent to Pay Prevailing Wages" may be LISTED but UNCHECKED, or a "Davis Bacon Wage Determination Number" / "Washington L&I Intent Number" may say "Not Applicable". In those cases answer "no". Quote the exact governing line verbatim in "basis" so it can be located.\n\nAlready-detected risks (do not repeat):\n${existingList}\n\n--- CONTRACT (excerpt) ---\n${doc}\n---`,
+      },
+    ],
+    output_config: { format: zodOutputFormat(EnrichSchema, 'enrichment'), effort: 'medium' },
+  });
+  const out = res.parsed_output || { facts: null, flags: [], features: null };
+  return { facts: out.facts || null, rawFlags: out.flags || [], features: out.features || null, truncated };
+}
+
+// Dedicated, exhaustive scope extraction. Scope on these subcontracts is a long,
+// nested list — Inclusions, a Division/Section table, Clarifications with
+// sub-bullets, explicit Exclusions, and unit rates (standby $/MH, $/mobilization,
+// salvage %). Bundling it with facts+flags made the model summarize and drop most
+// of it, so this is its own call over a generous scope-centered excerpt, at medium
+// effort, told to copy EVERY line verbatim and tag what kind it is.
+const ScopeItemSchema = z.object({
+  ref: z.string().nullable().describe('The item\'s number/letter exactly as written in the document, e.g. "B.3", "B.11", "A.1", or the sub-bullet it belongs to — null if it has none.'),
+  text: z.string().describe('The scope line copied VERBATIM from the contract (one inclusion, clarification, exclusion, sub-bullet, rate, or alternate). Keep it as written; do not paraphrase, merge, or renumber.'),
+  kind: z
+    .enum(['inclusion', 'clarification', 'exclusion', 'rate', 'alternate', 'other'])
+    .describe('inclusion = work we must perform; clarification = a qualifying note about how/what; exclusion = work explicitly NOT included ("Excludes…", "No overcutting allowed", "by others"); rate = a unit price/allowance (standby $150/MH, $1,000/mobilization, salvage 20%); alternate = a priced alternate or "include the alternate to…"; other = anything else specific.'),
+});
+const ScopeSchema = z.object({
+  scopeItems: z.array(ScopeItemSchema).describe('Every enumerated scope item, in document order. Be exhaustive — do not stop early.'),
+});
+
+const SCOPE_INSTRUCTIONS = `Pull the ACTUAL scope of the subcontractor's (Bedrock's) work out of the contract excerpt below — the way an estimator scanning the document marks up the real work, NOT the generic legal language.
+
+WHERE THE SCOPE LIVES: the real scope is the ENUMERATED lists — typically an "A. Inclusions" list and a "B. Clarifications" list with items numbered 1, 2, 3 …, plus indented sub-bullets and explicit "Excludes…" lines. These numbered items ARE the scope. There may also be a Scope of Work / Exclusions / Specification-Sections list. Capture EVERY item.
+
+Be EXHAUSTIVE and do not stop early:
+- Return ONE scope item per numbered/lettered line, in document order, and each indented sub-bullet as its own item.
+- These lists routinely CONTINUE ACROSS A PAGE BREAK. If you see items 1–8 and then a page header/footer, the SAME list resumes (9, 10, 11 …) immediately after — capture those too. Do not let a page break end the list.
+- IGNORE page headers/footers and the boilerplate that interrupts the list: page numbers, "AGC DOCUMENT NO. 600", "SUBCONTRACT NO.: …", "PROJECT: …", "The Associated General Contractors of America".
+- Put the item's number/letter as written in "ref" (e.g. "B.3", "B.11", "A.1"); null if none.
+- Tag "kind" per the schema. Exclusions ("Excludes…", "No overcutting allowed", "by others") and rates ($150/MH, $1,000/mobilization, salvage 20%) matter most — never drop them.
+
+EXCLUDE pure legal boilerplate (entire-agreement, indemnity, insurance, payment terms, generic "furnish all labor, equipment and tools necessary to perform the Work"). Keep only the operational work/scope items. Copy each line VERBATIM so it can be located. Return an empty array only if the excerpt genuinely has no enumerated scope.
+
+--- CONTRACT (scope-focused excerpt) ---
+`;
+
+export async function llmExtractScope(documentText) {
+  const excerpt = buildScopeExcerpt(documentText || '', SCOPE_EXTRACT_MAX);
+  if (!excerpt.trim()) return { scopeItems: [] };
+  const c = client();
+  const res = await c.messages.parse({
+    model: MODEL,
+    max_tokens: 8000,
+    system: systemBlocks(),
+    messages: [{ role: 'user', content: `${SCOPE_INSTRUCTIONS}${excerpt}\n---` }],
+    output_config: { format: zodOutputFormat(ScopeSchema, 'scope'), effort: 'medium' },
+  });
+  const out = res.parsed_output || { scopeItems: [] };
+  const items = (Array.isArray(out.scopeItems) ? out.scopeItems : [])
+    .filter((s) => s && typeof s.text === 'string' && s.text.trim())
+    .map((s) => ({ ref: s.ref && String(s.ref).trim() ? String(s.ref).trim() : null, text: s.text.trim(), kind: s.kind || 'other' }));
+  return { scopeItems: items };
+}
+
+// Read a bid/estimate document and extract the structured assumptions used by
+// the bid-vs-schedule cross-check, so the user can upload their bid instead of
+// typing the numbers. One small, fast call.
+const BidSchema = z.object({
+  basis: z.enum(['straight-time', 'premium', 'unknown']).describe('Was labor priced at straight time, or did it include premium/overtime?'),
+  pricedMobilizations: z.number().nullable().describe('Number of mobilizations/trips to the site that were priced, or null if not stated'),
+  additionalMobRate: z.number().nullable().describe('Dollars per additional mobilization, or null'),
+  standbyRate: z.number().nullable().describe('Dollars per hour of standby per crew member, or null'),
+  pricedSaturdayWork: z.boolean().nullable().describe('Whether the bid included Saturday/weekend work, or null if unclear'),
+});
+
+export async function llmParseBid(bidText) {
+  const c = client();
+  const doc = (bidText || '').slice(0, 24000);
+  const res = await c.messages.parse({
+    model: MODEL,
+    max_tokens: 800,
+    system: [
+      {
+        type: 'text',
+        text: 'You read a concrete-cutting subcontractor\'s (Bedrock) bid or estimate and extract the pricing assumptions, so they can be compared against the contract schedule to find change orders. Use null for any field the bid does not state. Do not guess.',
+      },
+    ],
+    messages: [{ role: 'user', content: `Extract the bid assumptions from this estimate/bid:\n\n---\n${doc}\n---` }],
+    output_config: { format: zodOutputFormat(BidSchema, 'bid_assumptions'), effort: 'low' },
+  });
+  const out = res.parsed_output || {};
+  const a = {};
+  if (out.basis) a.basis = out.basis;
+  if (typeof out.pricedMobilizations === 'number') a.pricedMobilizations = out.pricedMobilizations;
+  if (typeof out.additionalMobRate === 'number') a.additionalMobRate = out.additionalMobRate;
+  if (typeof out.standbyRate === 'number') a.standbyRate = out.standbyRate;
+  if (typeof out.pricedSaturdayWork === 'boolean') a.pricedSaturdayWork = out.pricedSaturdayWork;
+  return a;
+}
+
+// Compare the scope of OUR uploaded quote/bid against the scope the contract
+// actually binds us to, and draft redline language to send back to the GC so the
+// contract matches what we priced.
+
+const RedlineSchema = z.object({
+  issue: z.string().describe('Short title of the scope mismatch, e.g. "Contract omits the 14 priced core-drill penetrations"'),
+  direction: z
+    .enum(['contract-exceeds-quote', 'quote-exceeds-contract', 'conflict', 'silent'])
+    .describe(
+      'contract-exceeds-quote = contract demands more than we priced (unpriced work / need exclusion); quote-exceeds-contract = we priced/assumed something the contract does not grant (need it added/confirmed); conflict = both state it but differ (quantity, location, premium time); silent = contract is silent on something our quote depends on'
+    ),
+  severity: z.enum(['HIGH', 'MEDIUM', 'LOW']).describe('HIGH if it exposes Bedrock to unpriced cost or unpaid work'),
+  contractLanguage: z
+    .string()
+    .nullable()
+    .describe('The exact current contract sentence/clause this redline targets, quoted VERBATIM so it can be located — or null if the contract is silent and we are proposing an addition'),
+  quoteBasis: z.string().nullable().describe('What our quote/bid says or assumes on this point (quantity, inclusion, exclusion, basis), or null'),
+  suggestedLanguage: z.string().describe('Ready-to-send replacement or added clause language that aligns the contract to our quote — written to paste into a redline or an email to the GC'),
+  rationale: z.string().describe('One or two sentences: why we are asking for this change, tied to what we priced.'),
+});
+
+const QuoteItemSchema = z.object({
+  item: z.string().describe('A scope line / bid item from Bedrock\'s own quote, copied as written (e.g. "Base Bid", "Alternate – Floor Sink Demo", "Sawcut & remove slab at existing kitchen").'),
+  amount: z.string().nullable().describe('The dollar amount for that line as written (e.g. "$101,655"), or null if the quote does not show a price for it.'),
+});
+
+const ScopeCompareSchema = z.object({
+  quoteScope: z.array(QuoteItemSchema).describe('What WE priced — the line items / scope from Bedrock\'s own quote/bid, in order, with amounts where shown. Empty array only if the bid has no identifiable scope.'),
+  summary: z.string().describe('One or two plain sentences on how well the contract scope matches our quoted scope overall.'),
+  redlines: z.array(RedlineSchema).describe('Concrete, sendable scope changes. Empty array if the contract scope already matches the quote.'),
+});
+
+// Render the already-extracted scope items into a compact list for the prompt.
+function scopeItemsToText(scopeItems) {
+  return (Array.isArray(scopeItems) ? scopeItems : [])
+    .filter((s) => s && s.text && s.text.trim())
+    .map((s) => `- ${s.ref ? `[${s.ref}] ` : ''}${s.text.trim()}${s.kind && s.kind !== 'other' && s.kind !== 'inclusion' ? ` (${s.kind})` : ''}`)
+    .join('\n');
+}
+
+// Compare the bid against the contract scope. To stay well within the serverless
+// time limit, this prefers the already-extracted scope list (small, fast) and
+// only falls back to a contract excerpt when no list was extracted. Low effort:
+// the inputs are short and focused, so a heavier pass isn't needed.
+export async function llmScopeCompare({ contractText, bidText, scopeItems }) {
+  if (!bidText?.trim()) return { quoteScope: [], summary: '', redlines: [] };
+  const fromList = scopeItemsToText(scopeItems);
+  const contract = fromList || buildScopeExcerpt(contractText || '', 16000);
+  if (!contract.trim()) return { quoteScope: [], summary: '', redlines: [] };
+  const c = client();
+  const bid = bidText.slice(0, 12000);
+  const res = await c.messages.parse({
+    model: MODEL,
+    max_tokens: 3000,
+    system: systemBlocks(),
+    messages: [
+      {
+        role: 'user',
+        content:
+          `Compare the SCOPE in Bedrock's own QUOTE/BID against the SCOPE the CONTRACT binds Bedrock to, and propose redline language to send back to the general contractor so the contract matches what Bedrock actually priced.\n\n` +
+          `First, in "quoteScope", list what WE priced — the line items / scope from our own quote, in order, with the dollar amount where the bid shows one (Base Bid, each Alternate, etc.). Copy item names as written.\n\n` +
+          `Focus on the EXACT scope: quantities, dimensions, locations/zones, assemblies, cut/saw/core types, inclusions, exclusions, and pricing basis (straight time vs. premium, number of mobilizations). Ignore generic boilerplate.\n\n` +
+          `For every material mismatch produce one redline:\n` +
+          `- If the CONTRACT demands more than the quote covers (extra area, extra penetrations, work not priced), propose either an explicit EXCLUSION or that the item be priced as a change.\n` +
+          `- If the QUOTE includes an assumption/exclusion the contract does not grant (e.g. priced one mobilization, straight time only, dewatering by others), propose adding that assumption/exclusion to the contract.\n` +
+          `- If both address an item but the numbers/locations CONFLICT, propose language matching the quoted figure.\n` +
+          `In contractLanguage, quote (or closely paraphrase) the relevant contract scope item so it can be located — include its [ref] if shown; null if the contract is simply silent. Write suggestedLanguage so it can be pasted straight into a redline or an email to the GC.\n\n` +
+          `CRITICAL: Use only real content from the two inputs below. NEVER output placeholder, dummy, or filler text (e.g. the word "placeholder"). If the scopes already match — or there is nothing concrete to compare — return an EMPTY redlines array and say so plainly in the summary. Do not invent a redline just to fill the array.\n\n` +
+          `--- BEDROCK QUOTE / BID ---\n${bid}\n---\n\n--- CONTRACT SCOPE ---\n${contract}\n---`,
+      },
+    ],
+    output_config: { format: zodOutputFormat(ScopeCompareSchema, 'scope_comparison'), effort: 'low' },
+  });
+  const out = res.parsed_output || { quoteScope: [], summary: '', redlines: [] };
+  // Drop any degenerate placeholder/filler redlines the model may still emit.
+  const redlines = (Array.isArray(out.redlines) ? out.redlines : []).filter(
+    (r) => r && r.issue && r.suggestedLanguage && !/^\s*placeholder\s*$/i.test(r.issue) && !/^\s*placeholder\s*$/i.test(r.suggestedLanguage)
+  );
+  const quoteScope = (Array.isArray(out.quoteScope) ? out.quoteScope : [])
+    .filter((q) => q && q.item && q.item.trim())
+    .map((q) => ({ item: q.item.trim(), amount: q.amount && String(q.amount).trim() ? String(q.amount).trim() : null }));
+  return { quoteScope, summary: out.summary || '', redlines };
+}
+
+// Convert raw LLM flags into the engine's Flag shape, attaching a page number by
+// locating the quoted clause text in the document, and de-duping against the
+// rules-engine flags by title similarity.
+export function normalizeLlmFlags(rawFlags, { text, pages, existingFlags = [] }) {
+  // Build per-category token sets for the rules-engine flags, so we can drop LLM
+  // findings that restate something the patterns already caught.
+  const existing = existingFlags.map((f) => ({ category: f.category, tokens: titleTokens(f.title) }));
+  const kept = [];
+  const out = [];
+  for (const f of rawFlags) {
+    const tokens = titleTokens(f.title);
+    const isDup = [...existing, ...kept].some(
+      (e) => e.category === f.category && tokenOverlap(e.tokens, tokens) >= 2
+    );
+    if (isDup) continue;
+    kept.push({ category: f.category, tokens });
+    const idx = f.clauseText ? text.indexOf(f.clauseText.slice(0, 40)) : -1;
+    const page = idx >= 0 && pages.length ? offsetToPage(pages, idx) : null;
+    out.push({
+      id: `llm-${f.category}-${out.length + 1}`,
+      source: 'llm',
+      category: f.category,
+      categoryName: CATEGORIES[f.category] || f.category,
+      title: f.title,
+      severity: f.severity,
+      confidence: f.confidence,
+      attorneyReview: f.attorneyReview,
+      scopeSchedule: f.scopeSchedule,
+      why: f.why,
+      action: f.action,
+      note: null,
+      occurrences: 1,
+      locations: [
+        {
+          page,
+          article: null,
+          clauseText: f.clauseText,
+          quote: (f.clauseText || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+        },
+      ],
+    });
+  }
+  return out;
+}
+
+// Enrich a rules-engine analysis in place: fill missing contract facts and
+// append LLM-found clauses the patterns missed. Returns the same analysis object
+// (mutated) with an `llm` block describing what the pass did. Never throws — on
+// API error it records the failure and leaves the rules-engine result intact.
+export async function enrichAnalysisWithLlm(analysis, { text, pages = [], logger } = {}) {
+  if (!llmAvailable()) {
+    analysis.llm = { used: false, reason: 'No ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN set — rules engine only.' };
+    return analysis;
+  }
+  try {
+    // 1. Contract facts — fill fields the regex left null; keep regex value otherwise.
+    const facts = await llmExtractMetadata(text, { logger });
+    if (facts) {
+      const m = analysis.metadata;
+      const fill = (k, v) => { if ((m[k] == null || m[k] === '') && v != null && v !== '') m[k] = v; };
+      fill('contractType', facts.contractType);
+      fill('project', facts.project);
+      fill('contractor', facts.contractor);
+      fill('subcontractor', facts.subcontractor);
+      fill('contractValue', facts.contractValue);
+      if (facts.prevailingWage) m.prevailingWage = true;
+      if (!m.scopeSnippet && facts.scopeSummary) m.scopeSnippet = facts.scopeSummary;
+      analysis.metadata.llmFacts = facts;
+    }
+
+    // 2. Clauses the patterns missed.
+    const found = await llmFindClauses(text, { existingFlags: analysis.flags, logger });
+    let newFlags = normalizeLlmFlags(found.flags, { text, pages, existingFlags: analysis.flags });
+    newFlags = applyTierPosture(newFlags, analysis.tier);
+
+    if (newFlags.length) {
+      const sevRank = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+      analysis.flags = [...analysis.flags, ...newFlags].sort(
+        (a, b) => a.category.localeCompare(b.category) || sevRank[a.severity] - sevRank[b.severity]
+      );
+      analysis.summary = buildSummary(analysis.flags, analysis.incorporated);
+    }
+
+    analysis.llm = {
+      used: true,
+      model: MODEL,
+      addedFlags: newFlags.length,
+      factsExtracted: !!facts,
+      chunkCount: found.chunkCount,
+      coverage: found.truncated
+        ? `Scanned ${found.coveredChars.toLocaleString()} of ${found.totalChars.toLocaleString()} chars (first ${MAX_CHUNKS} excerpts) — large document truncated for the LLM pass; rules engine covered the full text.`
+        : 'Full document scanned.',
+    };
+  } catch (e) {
+    analysis.llm = { used: false, error: e.message, reason: 'LLM pass failed; rules-engine result is intact.' };
+    if (logger) logger(`LLM pass failed: ${e.message}`);
+  }
+  return analysis;
+}
+
+// Significant (length>3) tokens of a title, ignoring a few generic filler words.
+const FILLER = new Set(['clause', 'rules', 'flag', 'duplicate', 'obligation', 'requirement', 'provision']);
+function titleTokens(t) {
+  return new Set(
+    (t || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length > 3 && !FILLER.has(w))
+  );
+}
+function tokenOverlap(a, b) {
+  let n = 0;
+  for (const w of a) if (b.has(w)) n++;
+  return n;
+}

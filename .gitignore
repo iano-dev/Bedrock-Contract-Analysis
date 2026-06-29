@@ -1,0 +1,9 @@
+node_modules/
+*.log
+/output/
+/uploads/
+.DS_Store
+.env
+# Browser vendor assets are staged from node_modules by scripts/build-web.mjs
+/web/public/vendor/
+.netlify/

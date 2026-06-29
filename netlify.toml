@@ -1,0 +1,20 @@
+# Netlify deployment for the Bedrock Contract Analyzer.
+#
+# The browser does PDF rendering, text extraction, and OCR; the serverless
+# functions run the pure-JS rules engine + optional Claude pass and generate
+# deliverables. No native binaries, no server state.
+
+[build]
+  command = "npm run build:web"
+  publish = "web/public"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+[functions]
+  node_bundler = "esbuild"
+
+# Note: we deliberately do NOT set COOP/COEP cross-origin isolation. It would let
+# tesseract.js use threads, but it also blocks the external Google Picker scripts.
+# tesseract runs fine single-threaded; Google Drive needs the external scripts.
