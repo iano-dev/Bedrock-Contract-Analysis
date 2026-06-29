@@ -66,6 +66,16 @@
 
   .sidepane{flex:1 1 42%;min-width:240px;background:var(--panel);overflow:hidden;border-left:1px solid var(--line);display:flex;flex-direction:column;}
   .summary{padding:12px 14px;border-bottom:1px solid var(--line);background:var(--panel);flex:0 0 auto;}
+  .checklist{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:7px 14px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line);background:#fbfcfd;}
+  .checklist .ckhdr{font-size:12px;font-weight:600;color:#57606a;}
+  .ckunit{display:flex;align-items:center;gap:6px;font-size:12.5px;}
+  .ckunit label{display:flex;align-items:center;gap:5px;cursor:pointer;margin:0;}
+  .ckunit input{width:15px;height:15px;cursor:pointer;}
+  .ckunit .cklabel{font-weight:600;color:var(--ink);}
+  .ckstatus{font-size:10.5px;font-weight:600;border-radius:4px;padding:1px 6px;white-space:nowrap;}
+  .ckunit.det .ckstatus{background:#e3f1e6;color:#1a7a33;cursor:pointer;}
+  .ckunit.det .ckstatus:hover{background:#cfe9d5;}
+  .ckunit:not(.det) .ckstatus{background:#eef0f2;color:#9aa3ae;}
   #findingsView{flex:1 1 58%;overflow:auto;min-height:80px;}
   /* collapsible cards: a chevron in the header toggles the body */
   .chev{display:inline-block;width:12px;font-size:10px;color:#8a93a0;transition:transform .15s;cursor:pointer;user-select:none;}
@@ -241,6 +251,7 @@
     <div class="gutter" id="gutter"></div>
     <div class="sidepane" id="sidepane">
       <div class="summary" id="summary"></div>
+      <div class="checklist" id="checklist" style="display:none"></div>
       <div id="findingsView">
         <div class="scopebox" id="scopebox"></div>
         <div class="quotescopebox" id="quotescopebox"></div>
@@ -530,7 +541,7 @@ function openReview(a,viewable){
   $('docname').textContent=esc(a.fileName||'document');
   const rb=$('redlinebox'); if(rb){ rb.innerHTML=''; rb.style.display='none'; }
   const qb=$('quotescopebox'); if(qb){ qb.innerHTML=''; qb.style.display='none'; }
-  renderSummary(a); renderScope(a); renderQuoteScope(a); renderComments(a); renderExtra(a);
+  renderSummary(a); renderChecklist(a); renderScope(a); renderQuoteScope(a); renderComments(a); renderExtra(a);
   if(viewable && state.pdf) renderViewer().catch(e=>{$('pages').innerHTML='<p style="color:#fff;padding:20px">Could not render PDF: '+esc(e.message)+'</p>';});
   else $('pages').innerHTML='<p style="color:#fff;padding:20px">Document preview is available for PDF uploads. Findings are shown on the right.</p>';
   reviewActive=true; armBackGuard(); saveSession();
@@ -589,6 +600,51 @@ function renderComments(a){
 // The exact scope of OUR work, pulled verbatim by the Claude pass. Distinct from
 // the generic "furnish all labor…" boilerplate — these are the measurable items
 // (quantities, dimensions, zones, cut/core types) you actually price and perform.
+// Top-of-findings review checklist. Each box is a manual tick (saved with the
+// session) annotated with whether the analyzer found that item in THIS contract,
+// with click-to-jump to the clause. Detection is driven off the rules/AI flags
+// and metadata, with a document-text fallback.
+function checklistItems(a){
+  const flags=a.flags||[];
+  const find=(re)=>flags.find(f=>re.test(f.id||'')||re.test(f.title||''));
+  const docHas=(re)=>re.test(state.docText||'');
+  const orcap=flags.find(f=>f.id==='OR-retainage-cap');
+  const ccipFlag=find(/ocip|ccip|wrap/i);
+  const retFlag=orcap||find(/retain/i);
+  const payFlag=find(/prevailing|certified payroll|davis/i);
+  const pw=!!(a.metadata&&a.metadata.prevailingWage);
+  return [
+    { key:'ccip', label:'CCIP / OCIP', flag:ccipFlag, re:/\bO?CIP\b|wrap[\s-]?up|controlled insurance program/i,
+      detected:!!ccipFlag||docHas(/\bO?CIP\b|wrap[\s-]?up|controlled insurance program/i) },
+    { key:'retention', label:'Retention', flag:retFlag, re:/retain\w*/i, detail:orcap?'exceeds OR 5% cap':'',
+      detected:!!retFlag||docHas(/retain\w*/i) },
+    { key:'payroll', label:'Certified payroll', flag:payFlag, re:/certified payroll|prevailing wage|davis[\s-]?bacon|public works/i,
+      detected:pw||!!payFlag||docHas(/certified payroll|prevailing wage|davis[\s-]?bacon/i) },
+  ];
+}
+function renderChecklist(a){
+  const box=$('checklist'); if(!box) return;
+  if(!a||!a.flags){ box.style.display='none'; return; }
+  a.checklist=a.checklist||{};
+  const items=checklistItems(a);
+  box.style.display='';
+  box.innerHTML='<span class="ckhdr">Review:</span>'+items.map(it=>{
+    const status=it.detected
+      ? `<span class="ckstatus" data-k="${it.key}" title="Jump to it in the document">● in contract${it.detail?(' — '+esc(it.detail)):''} ↗</span>`
+      : '<span class="ckstatus">not detected</span>';
+    return `<span class="ckunit ${it.detected?'det':''}"><label><input type="checkbox" data-k="${it.key}" ${a.checklist[it.key]?'checked':''}><span class="cklabel">${esc(it.label)}</span></label>${status}</span>`;
+  }).join('');
+  box.querySelectorAll('input[type=checkbox]').forEach(cb=>{ cb.onchange=()=>{ a.checklist[cb.dataset.k]=cb.checked; saveSession(); }; });
+  box.querySelectorAll('.ckunit.det .ckstatus').forEach(s=>{ s.onclick=()=>{ const it=items.find(x=>x.key===s.dataset.k); if(it) checklistJump(it); }; });
+}
+function checklistJump(it){
+  if(it.flag){ const loc=(it.flag.locations||[])[0]; if(loc&&loc.page){ locateInDoc(loc.page, loc.quote||loc.clauseText||''); return; } }
+  if(!state.pdf||!state.docText) return;
+  const m=state.docText.match(it.re); if(!m) return;
+  let page=1; const idx=m.index;
+  for(const p of state.pages){ if(idx>=p.start&&idx<=p.end){ page=p.page; break; } }
+  locateInDoc(page, state.docText.substr(idx,60));
+}
 // Make a section card's header toggle its body (collapse/expand).
 function wireCollapse(box){ const h=box.querySelector('.cardhdr'); if(h) h.onclick=()=>box.classList.toggle('collapsed'); }
 function renderScope(a){
@@ -741,7 +797,7 @@ async function runEnrich(){
     }
     if(d.facts) fillFacts(a.metadata,d.facts);
     a.llm={used:true,addedFlags:(d.flags||[]).length};
-    recountSummary(a); renderSummary(a); renderComments(a); renderExtra(a); saveSession();
+    recountSummary(a); renderSummary(a); renderChecklist(a); renderComments(a); renderExtra(a); saveSession();
   }catch(e){ a.llm={used:false,reason:'AI pass unavailable for this document'}; renderSummary(a); }
 }
 function fillFacts(m,f){
